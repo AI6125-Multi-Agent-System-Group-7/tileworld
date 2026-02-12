@@ -46,9 +46,9 @@ import tileworld.environment.TWTile;
  */
 public class CatGUI extends GUIState {
 
-    // ============= Kitty World Display Settings ============= //
+    // ============= Meow World Display Settings ============= //
     private static final int BASE_CELL_SIZE_IN_PIXELS = 44;
-    private static final double DISPLAY_SCALE = 0.32;
+    private static final double DISPLAY_SCALE = 0.39;  // adjust to ur screen
     private static final int CELL_SIZE_IN_PIXELS =
             (int) Math.round(BASE_CELL_SIZE_IN_PIXELS * DISPLAY_SCALE);
 
@@ -66,7 +66,7 @@ public class CatGUI extends GUIState {
     private final ObjectGridPortrayal2D backgroundGridPortrayal = new ObjectGridPortrayal2D();
     private final ObjectGridPortrayal2D objectGridPortrayal = new ObjectGridPortrayal2D();
     private final ObjectGridPortrayal2D agentGridPortrayal = new ObjectGridPortrayal2D();
-    private final List<MemoryLayer> memoryGridPortrayalList = new ArrayList<MemoryLayer>();
+    private final List<MeowMoryLayer> memoryGridPortrayalList = new ArrayList<MeowMoryLayer>();
 
     public CatGUI() {
         this(new TWEnvironment());
@@ -84,7 +84,7 @@ public class CatGUI extends GUIState {
         return "<H2>Moeworld - GUI</H2><p>Meow~ I turned Tileworld into a cozy kitty playroom. Follow the cats, watch the yarn, and purr at the catfoods. Have fun with this multi-cat system project!</p>";
     }
 
-    public void setupPortrayals() {
+    public void setupDrawings() {
         TWEnvironment tw = (TWEnvironment) state;
 
         ObjectGrid2D backgroundGrid = new ObjectGrid2D(tw.getxDimension(), tw.getyDimension());
@@ -96,20 +96,20 @@ public class CatGUI extends GUIState {
         }
         backgroundGridPortrayal.setField(backgroundGrid);
         backgroundGridPortrayal.setPortrayalForAll(
-                new GridBackgroundPortrayal(GRID_COLOR_A, GRID_COLOR_B, GRID_LINE_COLOR));
+                new DrawMeowWorld(GRID_COLOR_A, GRID_COLOR_B, GRID_LINE_COLOR));
 
         objectGridPortrayal.setField(tw.getObjectGrid());
         objectGridPortrayal.setPortrayalForClass(TWHole.class,
-                new StaticImagePortrayal("assets/hole.png", new Color(0xE7, 0xC2, 0xC9)));
+                new DrawGameAsset("assets/hole.png", new Color(0xE7, 0xC2, 0xC9)));
         objectGridPortrayal.setPortrayalForClass(TWTile.class,
-                new StaticImagePortrayal("assets/yarn.png", new Color(0xD8, 0xB2, 0xC8)));
+                new DrawGameAsset("assets/yarn.png", new Color(0xD8, 0xB2, 0xC8)));
         objectGridPortrayal.setPortrayalForClass(TWFuelStation.class,
-                new StaticImagePortrayal("assets/food.png", new Color(0xE9, 0xC8, 0xA6)));
+                new DrawGameAsset("assets/food.png", new Color(0xE9, 0xC8, 0xA6)));
         objectGridPortrayal.setPortrayalForClass(TWObstacle.class,
-                new StaticImagePortrayal("assets/block.png", new Color(0xC6, 0xB0, 0xB5)));
+                new DrawGameAsset("assets/block.png", new Color(0xC6, 0xB0, 0xB5)));
 
         agentGridPortrayal.setField(tw.getAgentGrid());
-        CatAgentPortrayal agentPortrayal = new CatAgentPortrayal();
+        DrawMeowMeow agentPortrayal = new DrawMeowMeow();
         agentGridPortrayal.setPortrayalForClass(TWAgent.class, agentPortrayal);
         agentGridPortrayal.setPortrayalForRemainder(agentPortrayal);
 
@@ -117,7 +117,7 @@ public class CatGUI extends GUIState {
         catsWorld.repaint();
     }
 
-    private void setupMemoryPortrayals() {
+    private void setupMeowMoryDrawings() {
         memoryGridPortrayalList.clear();
         TWEnvironment tw = (TWEnvironment) state;
         ObjectGrid2D agentGrid = tw.getAgentGrid();
@@ -125,7 +125,7 @@ public class CatGUI extends GUIState {
             for (int y = 0; y < tw.getyDimension(); y++) {
                 Object obj = agentGrid.get(x, y);
                 if (obj instanceof TWAgent) {
-                    addMemoryPortrayal((TWAgent) obj);
+                    addMeowMoryPaws((TWAgent) obj);
                 }
             }
         }
@@ -133,12 +133,12 @@ public class CatGUI extends GUIState {
     }
 
     // Kitty will left a paw print on remembered cells
-    private void addMemoryPortrayal(TWAgent agent) {
+    private void addMeowMoryPaws(TWAgent agent) {
         ObjectGridPortrayal2D memoryPortrayal = new ObjectGridPortrayal2D();
         memoryPortrayal.setField(agent.getMemory().getMemoryGrid());
         memoryPortrayal.setPortrayalForNonNull(
-                new StaticImagePortrayal("assets/paw.png", new Color(0xE9, 0xC9, 0xD7)));
-        memoryGridPortrayalList.add(new MemoryLayer(memoryPortrayal, agent.getName() + "'s Memory"));
+                new DrawGameAsset("assets/paw.png", new Color(0xE9, 0xC9, 0xD7)));
+        memoryGridPortrayalList.add(new MeowMoryLayer(memoryPortrayal, agent.getName() + "'s Memory"));
     }
 
     public void resetDisplay() {
@@ -146,7 +146,7 @@ public class CatGUI extends GUIState {
         catsWorld.attach(backgroundGridPortrayal, "Background Grid");
         catsWorld.attach(objectGridPortrayal, "Tileworld Objects");
         catsWorld.attach(agentGridPortrayal, "Tileworld Agents");
-        for (MemoryLayer layer : memoryGridPortrayalList) {
+        for (MeowMoryLayer layer : memoryGridPortrayalList) {
             catsWorld.attach(layer.portrayal, layer.label);
         }
         catsWorld.setBackdrop(BACKGROUND_COLOR);
@@ -155,8 +155,8 @@ public class CatGUI extends GUIState {
     @Override
     public void start() {
         super.start();
-        setupPortrayals();
-        setupMemoryPortrayals();
+        setupDrawings();
+        setupMeowMoryDrawings();
     }
 
     @Override
@@ -219,11 +219,11 @@ public class CatGUI extends GUIState {
                         0, 0, PAW_EDGE_PADDING, PAW_EDGE_PADDING));
             }
         } catch (Exception e) {
-            // Safe to ignore if the Display2D internals change.
+            // I'll handle this later, ignored for now
         }
     }
 
-    // Load cat assets
+    // Load assets from the naming style I defined (agent#/cat#_#.png, agentNum, state, direction)
     private static final class CatAssets {
         private static final Map<String, Image> CACHE = new HashMap<String, Image>();
 
@@ -248,18 +248,19 @@ public class CatGUI extends GUIState {
             }
         }
 
-        static Image getCatImage(int state, String dir) {
-            String path = "assets/cat" + state + "_" + dir + ".png";
+        static Image getCatImage(int agentIndex, int state, String dir) {
+            int idx = Math.max(1, Math.min(agentIndex, 6));
+            String path = "assets/agent" + idx + "/cat" + state + "_" + dir + ".png";
             return getImage(path);
         }
     }
 
-    // Instead of Simple color blocks, display my pixart kitty
-    private static final class StaticImagePortrayal extends SimplePortrayal2D {
+    // Instead of Simple color blocks, display my pixart objects and kittens
+    private static final class DrawGameAsset extends SimplePortrayal2D {
         private final String path;
         private final Color fallbackColor;
 
-        StaticImagePortrayal(String path, Color fallbackColor) {
+        DrawGameAsset(String path, Color fallbackColor) {
             this.path = path;
             this.fallbackColor = fallbackColor;
         }
@@ -280,13 +281,13 @@ public class CatGUI extends GUIState {
         }
     }
 
-    private static final class GridBackgroundPortrayal extends SimplePortrayal2D {
+    private static final class DrawMeowWorld extends SimplePortrayal2D {
         private static final BasicStroke GRID_STROKE = new BasicStroke(1.0f);
         private final Color base;
         private final Color alt;
         private final Color line;
 
-        GridBackgroundPortrayal(Color base, Color alt, Color line) {
+        DrawMeowWorld(Color base, Color alt, Color line) {
             this.base = base;
             this.alt = alt;
             this.line = line;
@@ -321,7 +322,7 @@ public class CatGUI extends GUIState {
         }
     }
 
-    private static final class CatAgentPortrayal extends SimplePortrayal2D {
+    private static final class DrawMeowMeow extends SimplePortrayal2D {
         private static final Color[] PALETTE = new Color[] {
                 new Color(0xF5, 0xA7, 0xC2),
                 new Color(0x9E, 0xD6, 0xC4),
@@ -341,6 +342,8 @@ public class CatGUI extends GUIState {
                 0f);
 
         private final Map<TWAgent, AgentState> stateMap = new IdentityHashMap<TWAgent, AgentState>();
+        private final Map<TWAgent, Integer> spriteSetMap = new IdentityHashMap<TWAgent, Integer>();
+        private int nextSpriteSet = 1;
 
         @Override
         public void draw(Object object, Graphics2D graphics, DrawInfo2D info) {
@@ -372,7 +375,8 @@ public class CatGUI extends GUIState {
             }
 
             int state = fuelState(agent);
-            Image img = CatAssets.getCatImage(state, s.dir);
+            int spriteSet = spriteSetFor(agent);
+            Image img = CatAssets.getCatImage(spriteSet, state, s.dir);
 
             int w = (int) Math.round(info.draw.width);
             int h = (int) Math.round(info.draw.height);
@@ -414,7 +418,7 @@ public class CatGUI extends GUIState {
         private static int fuelState(TWAgent agent) {
             double maxFuel = Parameters.defaultFuelLevel;
             if (agent.getFuelLevel() <= 0) {
-                return 4;
+                return 3;
             }
             if (maxFuel <= 0) {
                 return 1;
@@ -423,10 +427,7 @@ public class CatGUI extends GUIState {
             if (ratio >= 0.5) {
                 return 1;
             }
-            if (ratio >= 0.25) {
-                return 2;
-            }
-            return 3;
+            return 2;
         }
 
         private static Color agentColor(TWAgent agent) {
@@ -434,6 +435,17 @@ public class CatGUI extends GUIState {
             int hash = name != null ? name.hashCode() : System.identityHashCode(agent);
             int idx = Math.abs(hash) % PALETTE.length;
             return PALETTE[idx];
+        }
+
+        private int spriteSetFor(TWAgent agent) {
+            Integer idx = spriteSetMap.get(agent);
+            if (idx != null) {
+                return idx;
+            }
+            int assigned = nextSpriteSet;
+            nextSpriteSet = (nextSpriteSet % 6) + 1;
+            spriteSetMap.put(agent, assigned);
+            return assigned;
         }
 
         private static final class AgentState {
@@ -449,11 +461,11 @@ public class CatGUI extends GUIState {
         }
     }
 
-    private static final class MemoryLayer {
+    private static final class MeowMoryLayer {
         final ObjectGridPortrayal2D portrayal;
         final String label;
 
-        MemoryLayer(ObjectGridPortrayal2D portrayal, String label) {
+        MeowMoryLayer(ObjectGridPortrayal2D portrayal, String label) {
             this.portrayal = portrayal;
             this.label = label;
         }
@@ -461,4 +473,4 @@ public class CatGUI extends GUIState {
 }
 
 // By Hanny (Group 7) with only cats in mind \(^>w<^)/ \(^-w-^)/ \(^=w=^)/
-// Last Edit: 11 Feb 2026
+// Last Edit: 13 Feb 2026
