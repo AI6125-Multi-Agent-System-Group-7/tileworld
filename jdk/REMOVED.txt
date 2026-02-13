@@ -1,0 +1,10 @@
+This version of the JDK no longer includes the following software:
+
+- Java Mission Control (JMC) : removed as of JDK 8u261 (July 2020)
+JMC is now available as a separate download. Please visit https://www.oracle.com/javase/jmc for more information.
+
+- Java VisualVM : removed as of JDK 8u361 (January 2023)
+VisualVM is now available as a separate download. Please visit https://visualvm.github.io for more information.
+
+- JavaFX, including javapackager and javafxpackager : removed as of JDK 8u451 (April 2025)
+Please visit https://www.oracle.com/javase/javafx for more information.
