@@ -23,7 +23,19 @@
 hs_err_pid*
 replay_pid*
 
+# Possible misplacement of MeowWorld Patch
+MeoWorld GUI Patch/
+
 # Since we might have different IDEs in the project
 .idea/
 .vscode/
-*.classpath
+.settings/
+*.metadata/
+.classpath
+.project
+
+# No JDK files and build files PLEASE!
+jdk/
+bin/
+target/
+build/
