@@ -16,6 +16,7 @@ import tileworld.Parameters;
 import tileworld.TWGUI;
 import tileworld.agent.Message;
 import tileworld.agent.MyAgent;
+import tileworld.agent.AgentHanny;
 import tileworld.agent.SimpleTWAgent;
 import tileworld.agent.TWAgent;
 
@@ -111,10 +112,10 @@ public class TWEnvironment extends SimState implements Steppable {
         //Now we create some agents
         Int2D pos = this.generateRandomLocation();
         createAgent(new MyAgent("agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentHanny("Hanny - Agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
         // pos = this.generateRandomLocation();
         // createAgent(new SimpleTWAgent("agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
         
-//        
         //create the fueling station
         pos = this.generateRandomLocation();
         fuelingStation = new TWFuelStation(pos.getX(), pos.getY(),this);
