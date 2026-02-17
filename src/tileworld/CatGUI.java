@@ -1,5 +1,6 @@
 package tileworld;
 
+import java.awt.BorderLayout;
 import java.awt.AlphaComposite;
 import java.awt.BasicStroke;
 import java.awt.Color;
@@ -7,6 +8,8 @@ import java.awt.Composite;
 import java.awt.Graphics2D;
 import java.awt.Image;
 import java.awt.Stroke;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
 import java.lang.reflect.Field;
 import java.io.File;
 import java.io.IOException;
@@ -18,9 +21,13 @@ import java.util.Map;
 
 import javax.imageio.ImageIO;
 import javax.swing.BorderFactory;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
+import javax.swing.JButton;
 import javax.swing.JFrame;
 import javax.swing.JScrollPane;
 import javax.swing.ScrollPaneConstants;
+import javax.swing.ToolTipManager;
 
 import sim.display.Console;
 import sim.display.Controller;
@@ -29,8 +36,11 @@ import sim.display.GUIState;
 import sim.engine.SimState;
 import sim.field.grid.ObjectGrid2D;
 import sim.portrayal.DrawInfo2D;
+import sim.portrayal.Inspector;
+import sim.portrayal.LocationWrapper;
 import sim.portrayal.SimplePortrayal2D;
 import sim.portrayal.grid.ObjectGridPortrayal2D;
+import sim.util.Int2D;
 import tileworld.agent.TWAgent;
 import tileworld.environment.TWEnvironment;
 import tileworld.environment.TWFuelStation;
@@ -59,6 +69,7 @@ public class CatGUI extends GUIState {
     private static final boolean HIDE_SCROLLBARS = true;
     private static int PAW_EDGE_PADDING = 0;
     private static final int PAW_RENDER_PAD = 0;
+    private static final int TOOLTIP_INITIAL_DELAY_MS = 0;
 
     public Display2D catsWorld;
     public JFrame catsBoundary;
@@ -178,6 +189,8 @@ public class CatGUI extends GUIState {
         catsWorld.attach(agentGridPortrayal, "Tileworld Agents");
 
         catsWorld.setBackdrop(BACKGROUND_COLOR);
+        catsWorld.useTooltips = true;
+        ToolTipManager.sharedInstance().setInitialDelay(TOOLTIP_INITIAL_DELAY_MS);
         tuneScrollPaws();
     }
 
@@ -248,7 +261,14 @@ public class CatGUI extends GUIState {
             }
         }
 
-        static Image getCatImage(int agentIndex, int state, String dir) {
+        static Image getCatIllust(String agentName, int agentIndex, int state, String dir) {
+            if (agentName != null) {
+                String normalized = agentName.trim();
+                if ("github".equalsIgnoreCase(normalized) || "octocat".equalsIgnoreCase(normalized)) {
+                    String octoPath = "assets/octocat/cat" + state + "_" + dir + ".png";
+                    return getImage(octoPath);
+                }
+            }
             int idx = Math.max(1, Math.min(agentIndex, 6));
             String path = "assets/agent" + idx + "/cat" + state + "_" + dir + ".png";
             return getImage(path);
@@ -346,6 +366,36 @@ public class CatGUI extends GUIState {
         private int nextSpriteSet = 1;
 
         @Override
+        public boolean hitObject(Object object, DrawInfo2D range) {
+            final double width = range.draw.width;
+            final double height = range.draw.height;
+            return range.clip.intersects(
+                    range.draw.x - width / 2.0,
+                    range.draw.y - height / 2.0,
+                    width,
+                    height);
+        }
+
+        @Override
+        public Inspector getInspector(LocationWrapper wrapper, GUIState state) {
+            return new CatAgentInspector(super.getInspector(wrapper, state), wrapper, state);
+        }
+
+        @Override
+        public String getStatus(LocationWrapper wrapper) {
+            Object obj = wrapper != null ? wrapper.getObject() : null;
+            if (!(obj instanceof TWAgent)) {
+                return null;
+            }
+            TWAgent agent = (TWAgent) obj;
+            String name = agent.getName();
+            if (name == null || name.trim().isEmpty()) {
+                name = "Agent";
+            }
+            return name + " | Score: " + agent.getScore() + " | Fuel: " + (int) agent.getFuelLevel() + " | Pos: (" + agent.getX() + "," + agent.getY() + ")";
+        }
+
+        @Override
         public void draw(Object object, Graphics2D graphics, DrawInfo2D info) {
             if (!(object instanceof TWAgent)) {
                 return;
@@ -376,7 +426,7 @@ public class CatGUI extends GUIState {
 
             int state = fuelState(agent);
             int spriteSet = spriteSetFor(agent);
-            Image img = CatAssets.getCatImage(spriteSet, state, s.dir);
+            Image img = CatAssets.getCatIllust(agent.getName(), spriteSet, state, s.dir);
 
             int w = (int) Math.round(info.draw.width);
             int h = (int) Math.round(info.draw.height);
@@ -458,6 +508,45 @@ public class CatGUI extends GUIState {
                 this.lastY = lastY;
                 this.dir = dir;
             }
+        }
+    }
+
+    private static final class CatAgentInspector extends Inspector {
+        private final Inspector originalInspector;
+
+        CatAgentInspector(Inspector originalInspector, LocationWrapper wrapper, GUIState guiState) {
+            this.originalInspector = originalInspector;
+
+            final TWAgent agent = (TWAgent) wrapper.getObject();
+            final SimState simState = guiState.state;
+            final Controller console = guiState.controller;
+
+            Box box = new Box(BoxLayout.X_AXIS);
+            JButton button = new JButton("Teleport Agent");
+            box.add(button);
+            box.add(Box.createGlue());
+
+            setLayout(new BorderLayout());
+            add(originalInspector, BorderLayout.CENTER);
+            add(box, BorderLayout.SOUTH);
+
+            button.addActionListener(new ActionListener() {
+                public void actionPerformed(ActionEvent e) {
+                    synchronized (simState.schedule) {
+                        Int2D loc = agent.getEnvironment().generateRandomLocation();
+                        agent.getEnvironment().getAgentGrid().set(agent.getX(), agent.getY(), null);
+                        agent.setLocation(loc);
+                        if (console != null) {
+                            console.refresh();
+                        }
+                    }
+                }
+            });
+        }
+
+        @Override
+        public void updateInspector() {
+            originalInspector.updateInspector();
         }
     }
 
