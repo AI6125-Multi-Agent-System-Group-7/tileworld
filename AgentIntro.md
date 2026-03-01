@@ -41,9 +41,22 @@ Group7AgentBase 是团队通用的抽象基类，负责把“硬约束+通用工
 - 手动记忆 FuelStation（传感器不会自动记录）。
 - shouldRefuel() 以“到油站距离 + 安全余量”作为返航判据。
 
-3. 可扩展性
+3. 通信协议（默认启用）
+- Base 内置轻量广播协议 `G7P1`，消息结构为：`version|step|from|to|type|x|y|payload`。
+- 任何继承 Group7AgentBase 的 Agent 默认都会发送基础消息。
+- 默认广播事件包括：
+  - 新发现对象：Tile / Hole / Obstacle（按首次观测去重广播）。
+  - FuelStation：仅首次发现时广播一次。
+  - 动作事件：成功 `PICKUP tile` 与成功 `FILL hole` 时即时广播。
+- 基类提供消息解析辅助函数，便于各 Agent 在 `think()` 阶段自行接收与处理（策略看各位自定义）。
+
+4. 探索策略（默认）
+- 新增Zig-Zag探索方法，按传感器覆盖宽度进行条带扫描。
+- 该策略用于低开销的默认探索；具体 Agent 仍可按需要替换或增强。
+
+5. 可扩展性
 - 只需继承并实现 think()，即可快速构建新策略。
-- 预留通信与多智能体协作的扩展入口。
+- 如需额外发送自定义消息，可在基类预留的扩展钩子中追加。
 
 
 ## Agent 2 - AgentHanny

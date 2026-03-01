@@ -315,7 +315,12 @@ public class CatGUI extends GUIState {
             setHoveredAgent(null);
             return;
         }
-        Object obj = tw.getAgentGrid().get(gridX, gridY);
+        ObjectGrid2D agentGrid = tw.getAgentGrid();
+        if (agentGrid == null) {
+            setHoveredAgent(null);
+            return;
+        }
+        Object obj = agentGrid.get(gridX, gridY);
         if (obj instanceof TWAgent) {
             setHoveredAgent((TWAgent) obj);
             return;

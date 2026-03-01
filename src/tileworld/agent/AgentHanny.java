@@ -18,39 +18,10 @@ import tileworld.environment.TWTile;
 public class AgentHanny extends Group7AgentBase {
     private static final int FUEL_MARGIN = 120; // when Agent don't know nothing about fuel station
 
-    private Int2D wanderTarget;
     private int stepCount;
 
     public AgentHanny(String name, int xpos, int ypos, TWEnvironment env, double fuelLevel) {
         super(name, xpos, ypos, env, fuelLevel);
-    }
-
-    @Override
-    public void communicate() {
-        // Share what we see so future teammates can pretend they also saw it.
-        rememberFuelStationsInSensorRange();
-
-        StringBuilder sb = new StringBuilder();
-        sb.append("pos=").append(this.getX()).append(",").append(this.getY());
-        sb.append(" fuel=").append((int) this.getFuelLevel());
-
-        TWTile tile = closestVisibleTile();
-        if (tile != null) {
-            sb.append(" tile=").append(tile.getX()).append(",").append(tile.getY());
-        }
-
-        TWHole hole = closestVisibleHole();
-        if (hole != null) {
-            sb.append(" hole=").append(hole.getX()).append(",").append(hole.getY());
-        }
-
-        TWFuelStation station = findFuelStationInMemory();
-        if (station != null) {
-            sb.append(" fuelStation=").append(station.getX()).append(",").append(station.getY());
-        }
-
-        Message message = new Message(getName(), "ALL", sb.toString());
-        this.getEnvironment().receiveMessage(message);
     }
 
     @Override
@@ -131,41 +102,7 @@ public class AgentHanny extends Group7AgentBase {
     }
 
     private TWThought explore() {
-        if (wanderTarget == null || at(wanderTarget)) {
-            wanderTarget = pickRandomNearbyTarget();
-        }
-        return stepToward(wanderTarget);
-    }
-
-    private boolean at(Int2D pos) {
-        return pos != null && this.getX() == pos.x && this.getY() == pos.y;
-    }
-
-    private Int2D pickRandomNearbyTarget() {
-        int radius = Parameters.defaultSensorRange * 2 + 2;
-        for (int i = 0; i < 24; i++) {
-            int dx = this.getEnvironment().random.nextInt(radius * 2 + 1) - radius;
-            int dy = this.getEnvironment().random.nextInt(radius * 2 + 1) - radius;
-            if (dx == 0 && dy == 0) {
-                continue;
-            }
-            int x = this.getX() + dx;
-            int y = this.getY() + dy;
-            if (this.getEnvironment().isInBounds(x, y) && !isBlocked(x, y)) {
-                return new Int2D(x, y);
-            }
-        }
-
-        // Fall back to any random valid location if nearby picks fail.
-        for (int i = 0; i < 50; i++) {
-            int x = this.getEnvironment().random.nextInt(this.getEnvironment().getxDimension());
-            int y = this.getEnvironment().random.nextInt(this.getEnvironment().getyDimension());
-            if (this.getEnvironment().isInBounds(x, y) && !isBlocked(x, y)) {
-                return new Int2D(x, y);
-            }
-        }
-
-        return null;
+        return exploreZigZag();
     }
 
     private boolean targetVisibleButMissing(TWEntity target) {
