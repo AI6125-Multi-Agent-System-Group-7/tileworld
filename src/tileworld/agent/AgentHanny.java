@@ -386,6 +386,12 @@ public class AgentHanny extends Group7AgentBase {
             boolean matched,
             String source) {
 
+        // Spawn-observed objects follow a hard-lifetime branch in inference,
+        // so we exclude them from lambda gradient updates to keep training
+        // data consistent with model assumptions.
+        if (entry.isSpawnObserved()) {
+            return;
+        }
         if (delta <= 0.0) {
             return;
         }

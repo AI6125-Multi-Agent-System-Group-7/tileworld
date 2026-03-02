@@ -18,7 +18,7 @@
 - 一间空调房，良好的网络，可用的充电口，与可口的小零食
 
 **配置方法（VSCode）**
-1. 安装 Java 扩展：`Java` from `Oracle`。
+1. 安装 Java 扩展：`Language Support for Java(TM) by Red Hat`。 (实验证明Oracle并不能胜任)
 2. 指定 JDK 1.8 与依赖库（路径按自己的机器调整）。示例：
 ```json
 {
