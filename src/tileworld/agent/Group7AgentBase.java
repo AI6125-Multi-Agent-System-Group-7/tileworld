@@ -36,13 +36,15 @@ public abstract class Group7AgentBase extends TWAgent {
     /**
      * Compact message type codes for efficient serialization/parsing.
      */
-    protected enum CommType {
+    public enum CommType {
         // Observed a previously unseen object.
         OBS_NEW_TILE("NT"),
         OBS_NEW_HOLE("NH"),
         OBS_OBSTACLE("OB"),
         // Fuel station should only be broadcast once by each agent.
         OBS_FUEL_ONCE("FS"),
+        // Optional per-step sensor snapshot from subclasses.
+        OBS_SENSOR_SNAPSHOT("SS"),
         // Action-level events from this agent.
         ACTION_PICKUP_TILE("PK"),
         ACTION_FILL_HOLE("FH");
@@ -549,6 +551,14 @@ public abstract class Group7AgentBase extends TWAgent {
         }
 
         return new Message(getName(), TO_ALL, sb.toString());
+    }
+
+    /**
+     * Creates a protocol message that follows the base communication format.
+     * Intended for subclasses that want to append extra messages in communicate().
+     */
+    protected final Message createProtocolMessage(CommType type, int x, int y, String payload) {
+        return encodeProtocolMessage(type, x, y, payload);
     }
 
     private String sanitizePayload(String payload) {

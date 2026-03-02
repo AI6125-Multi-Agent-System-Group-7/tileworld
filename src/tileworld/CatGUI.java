@@ -73,9 +73,9 @@ public class CatGUI extends GUIState {
     private static int PAW_EDGE_PADDING = 0;
     private static final int PAW_RENDER_PAD = 0;
     private static final int TOOLTIP_INITIAL_DELAY_MS = 0;
-    private static final float MEMORY_ALPHA_NORMAL = 0.7f;
+    private static final float MEMORY_ALPHA_NORMAL = 0.6f;
     private static final float MEMORY_ALPHA_HOVERED = 0.95f;
-    private static final float MEMORY_ALPHA_DIMMED = 0.30f;
+    private static final float MEMORY_ALPHA_DIMMED = 0.10f;
 
     public Display2D catsWorld;
     public JFrame catsBoundary;
@@ -102,7 +102,7 @@ public class CatGUI extends GUIState {
     }
 
     public static Object getInfo() {
-        return "<H2>Moeworld - GUI</H2><p>Meow~ I turned Tileworld into a cozy kitty playroom. Follow the cats, watch the yarn, and purr at the catfoods. Have fun with this multi-cat system project!</p>";
+        return "<H2>Meoworld - GUI</H2><p>Meow~ I turned Tileworld into a cozy kitty playroom. Follow the cats, watch the yarn, and purr at the catfoods. Have fun with this multi-cat system project!</p>";
     }
 
     public void setupDrawings() {
