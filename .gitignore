@@ -39,3 +39,6 @@ jdk/
 bin/
 target/
 build/
+
+# Agent runtime logs
+src/tileworld/agent/runtime/
