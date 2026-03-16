@@ -27,22 +27,7 @@ for (Message m : env.getMessages()) { ... }
 
 ### 1.2 每个 Step 的时序
 
-```mermaid
-sequenceDiagram
-    participant ENV as TWEnvironment
-    participant A as Agent A
-    participant B as Agent B
-
-    ENV->>ENV: step() / messages.clear()
-    A->>A: sense()
-    A->>ENV: communicate() / receiveMessage(...)
-    B->>B: sense()
-    B->>ENV: communicate() / receiveMessage(...)
-    A->>A: think() / read env.getMessages()
-    B->>B: think() / read env.getMessages()
-    A->>A: act()
-    B->>B: act()
-```
+<img src="assets/markdown/CommSequentialDisgram.png" alt="SequentialDiagram" width="auto" height="auto">
 
 对应调度顺序:
 - order 1: `TWEnvironment.step()`（清消息）
@@ -135,14 +120,14 @@ G7P1|step|from|to|type|x|y|payload
 - 对象 token: `T/H/O,x,y`
 - 空格 token: `E,x,y`
 - token 分隔符: `;`\
-简单理解就是把一个7x7的视野序列化了。
+简单理解就是把自己7x7的视野序列化了。
 ---
 
 ## 5. 如何使用
 
 ## 5.1 新 Agent 接入最短路径
 
-1. 继承 `Group7AgentBase`，不要重写 `communicate()`。
+1. 继承 `Group7AgentBase`，请不要重写 `communicate()`。
 2. 在 `think()` 开头处理消息（至少 parse + 过滤 self）。
 3. 需要自定义广播时，请重写 `appendCustomMessages(List<Message> outbox)`。
 4. 发送自定义消息时用 `createProtocolMessage(...)`，不要自己手拼字符串。
@@ -188,11 +173,11 @@ private void consumeMessages() {
 ## 5.4 什么时候用哪种消息
 
 - 接收 `NT/NH/OB`: 你只关心“首次发现”提示，带宽小。
-- 接收 `SS`: 你要持续同步（尤其要利用空格证据 `E`）。
+- 接收 `SS`: 你要持续同步（比如要利用空格证据 `E`）。
 - 接收 `PK/FH`: 你要快速消除队友已操作完的目标，避免重复劳动。
 - `FS`: 油站共享，只需一次。
 
-## 5.5 最小自测清单
+## 5.5 自测清单
 
 1. 发送端是否进入 `communicate()` 并调用 `receiveMessage(...)`
 2. 接收端 `think()` 是否读取 `env.getMessages()`
@@ -202,9 +187,10 @@ private void consumeMessages() {
 
 ---
 
-## 6. 报文示例
+## 6. 报文示例 （Step=128）
 
 ```text
-G7P1|128|Hanny|ALL|SS|17|24|T,17,24;E,17,25;H,20,20
+G7P1|128|Hanny|ALL|SS|45|32|T,17,24;E,17,25;H,20,20;...
 G7P1|128|TWAgent|ALL|PK|17|24
+G7P1|128|TWAgent|ALL|NT|15|27
 ```
