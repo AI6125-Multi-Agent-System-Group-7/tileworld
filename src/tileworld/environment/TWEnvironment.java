@@ -11,11 +11,12 @@ import sim.engine.Steppable;
 import sim.field.grid.ObjectGrid2D;
 import sim.util.Bag;
 import sim.util.Int2D;
-import sun.font.TrueTypeFont;
+//import sun.font.TrueTypeFont;
 import tileworld.Parameters;
 import tileworld.TWGUI;
 import tileworld.agent.Message;
 import tileworld.agent.MyAgent;
+import tileworld.agent.SmartAgent;
 import tileworld.agent.AgentHanny;
 import tileworld.agent.SimpleTWAgent;
 import tileworld.agent.TWAgent;
@@ -111,11 +112,12 @@ public class TWEnvironment extends SimState implements Steppable {
         
         //Now we create some agents
         Int2D pos = this.generateRandomLocation();
-        // createAgent(new MyAgent("MyAgent - Agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
-        createAgent(new AgentHanny("MyAgent - Agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        //createAgent(new MyAgent("agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+
+        createAgent(new SmartAgent(pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentHanny("Hanny - Agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        //createAgent(new AgentHanny("Hanny - Agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
