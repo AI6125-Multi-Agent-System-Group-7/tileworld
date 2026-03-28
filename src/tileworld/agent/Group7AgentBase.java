@@ -5,6 +5,7 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
@@ -19,8 +20,10 @@ import tileworld.environment.TWEntity;
 import tileworld.environment.TWEnvironment;
 import tileworld.environment.TWFuelStation;
 import tileworld.environment.TWHole;
+import tileworld.environment.TWObstacle;
 import tileworld.environment.TWTile;
 import tileworld.exceptions.CellBlockedException;
+import tileworld.agent.utils.SensorSnapshotCodec;
 
 /**
  * Group7AgentBase
@@ -29,7 +32,7 @@ import tileworld.exceptions.CellBlockedException;
  * Keep your policy small; keep your robots alive.
  */
 public abstract class Group7AgentBase extends TWAgent {
-    private static final String PROTOCOL_VERSION = "G7P1";
+    private static final String PROTOCOL_VERSION = "G7P2";
     private static final String PROTOCOL_SEPARATOR = "|";
     private static final String TO_ALL = "ALL";
 
@@ -43,8 +46,11 @@ public abstract class Group7AgentBase extends TWAgent {
         OBS_OBSTACLE("OB"),
         // Fuel station should only be broadcast once by each agent.
         OBS_FUEL_ONCE("FS"),
-        // Optional per-step sensor snapshot from subclasses.
+        // Per-step sensor snapshot broadcast by base class.
         OBS_SENSOR_SNAPSHOT("SS"),
+        // Target lock lifecycle events for cooperative deconfliction.
+        TARGET_LOCK("TL"),
+        TARGET_RELEASE("TR"),
         // Action-level events from this agent.
         ACTION_PICKUP_TILE("PK"),
         ACTION_FILL_HOLE("FH");
@@ -135,8 +141,9 @@ public abstract class Group7AgentBase extends TWAgent {
     public final void communicate() {
         rememberFuelStationsInSensorRange();
 
-        List<Message> outbox = new ArrayList<Message>(8);
+        List<Message> outbox = new ArrayList<Message>(12);
         collectObservationMessages(outbox);
+        collectSensorSnapshotMessage(outbox);
         appendCustomMessages(outbox);
 
         for (Message message : outbox) {
@@ -530,7 +537,51 @@ public abstract class Group7AgentBase extends TWAgent {
         return null;
     }
 
+    private void collectSensorSnapshotMessage(List<Message> outbox) {
+        List<SensorSnapshotCodec.SnapshotItem> items = new ArrayList<SensorSnapshotCodec.SnapshotItem>();
+        ObjectGrid2D grid = this.getEnvironment().getObjectGrid();
+        int range = Parameters.defaultSensorRange;
+
+        for (int dx = -range; dx <= range; dx++) {
+            for (int dy = -range; dy <= range; dy++) {
+                int x = this.getX() + dx;
+                int y = this.getY() + dy;
+                if (!this.getEnvironment().isInBounds(x, y)) {
+                    continue;
+                }
+
+                Object obj = grid.get(x, y);
+                if (obj == null) {
+                    items.add(new SensorSnapshotCodec.SnapshotItem("E", x, y));
+                    continue;
+                }
+
+                if (obj instanceof TWTile) {
+                    items.add(new SensorSnapshotCodec.SnapshotItem("T", x, y));
+                    continue;
+                }
+                if (obj instanceof TWHole) {
+                    items.add(new SensorSnapshotCodec.SnapshotItem("H", x, y));
+                    continue;
+                }
+                if (obj instanceof TWObstacle) {
+                    items.add(new SensorSnapshotCodec.SnapshotItem("O", x, y));
+                }
+            }
+        }
+
+        outbox.add(encodeProtocolMessage(
+                CommType.OBS_SENSOR_SNAPSHOT,
+                this.getX(),
+                this.getY(),
+                SensorSnapshotCodec.encode(items)));
+    }
+
     private void publishActionEvent(CommType type, int x, int y, String payload) {
+        publishProtocolMessage(type, x, y, payload);
+    }
+
+    protected final void publishProtocolMessage(CommType type, int x, int y, String payload) {
         this.getEnvironment().receiveMessage(encodeProtocolMessage(type, x, y, payload));
     }
 
@@ -559,6 +610,62 @@ public abstract class Group7AgentBase extends TWAgent {
      */
     protected final Message createProtocolMessage(CommType type, int x, int y, String payload) {
         return encodeProtocolMessage(type, x, y, payload);
+    }
+
+    protected final String encodeTargetLockPayload(double priority) {
+        double safe = Math.max(0.0, Math.min(1.0, priority));
+        return String.format(Locale.US, "p=%.6f", safe);
+    }
+
+    protected final String encodeTargetLockPayload(double priority, int ttlSteps) {
+        double safe = Math.max(0.0, Math.min(1.0, priority));
+        int safeTtl = Math.max(1, ttlSteps);
+        return String.format(Locale.US, "p=%.6f,ttl=%d", safe, safeTtl);
+    }
+
+    protected final Double parseTargetLockPriority(String payload) {
+        if (payload == null || payload.isEmpty()) {
+            return null;
+        }
+
+        String[] tokens = payload.split(",");
+        for (String token : tokens) {
+            String trimmed = token.trim();
+            if (trimmed.startsWith("p=")) {
+                try {
+                    return Double.parseDouble(trimmed.substring(2));
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+            }
+        }
+
+        // Backward-compatible fallback when payload is a plain number.
+        try {
+            return Double.parseDouble(payload.trim());
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    protected final Integer parseTargetLockTtl(String payload) {
+        if (payload == null || payload.isEmpty()) {
+            return null;
+        }
+
+        String[] tokens = payload.split(",");
+        for (String token : tokens) {
+            String trimmed = token.trim();
+            if (trimmed.startsWith("ttl=")) {
+                try {
+                    int ttl = Integer.parseInt(trimmed.substring(4));
+                    return (ttl > 0) ? ttl : null;
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+            }
+        }
+        return null;
     }
 
     private String sanitizePayload(String payload) {
