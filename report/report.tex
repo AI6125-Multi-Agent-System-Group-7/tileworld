@@ -1,0 +1,189 @@
+\documentclass{article}
+
+\usepackage{PRIMEarxiv}
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{lipsum}
+\usepackage{fancyhdr}       % header
+\usepackage{graphicx}       % graphics
+\graphicspath{{media/}}     % organize your images and other figures under media/ folder
+
+%Header
+\pagestyle{fancy}
+\thispagestyle{empty}
+\rhead{ \textit{ }} 
+
+% Update your Headers here
+\fancyhead[LO]{Running Title for Header}
+% \fancyhead[RE]{Firstauthor and Secondauthor} % Firstauthor et al. if more than 2 - must use \documentclass[twoside]{article}
+
+  
+%% Title
+\title{AI6125-MAS Group 7 Project Report
+\thanks{\textit{\underline{Contributions}}: 
+\textbf{Authors are listed alphabetically, all authors contributed to this project equally.}} 
+}
+
+\author{
+  Deng Zhouheng \\
+  <Matric Number> \\
+  \texttt{zhuoheng001@e.ntu.edu.sg} \\
+   \And
+  Lou Enge \\
+  <Matric Number> \\
+  \texttt{enge001@e.ntu.edu.sg} \\
+   \And
+  Sun Qingmo \\
+  <Matric Number> \\
+  \texttt{qingmo001@e.ntu.edu.sg} \\
+   \And
+  Wu Shanni \\
+  <Matric Number> \\
+  \texttt{swu029@e.ntu.edu.sg} \\
+   \And
+  Xiong Maihe \\
+  <Matric Number> \\
+  \texttt{maihe001@e.ntu.edu.sg} \\
+   \And
+  Zhang Yanhai \\
+  G2509626L \\
+  \texttt{zh0010ai@e.ntu.edu.sg} \\
+}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report presents our group project for AI6125 Multi-Agent Systems, in which we design and evaluate a team of six agents for the Tileworld environment. Tileworld is a dynamic grid-based domain that contains agents, tiles, holes, obstacles, and fuel stations, where agents must collect and deliver tiles to holes under sensing, movement, and fuel constraints with a maximum tile carriage of 3. Our work investigates how different agent roles, planning strategies, and communication mechanisms can boost the collective performance in an in-accessible (partially observable) and dynamic (time-varying) environment \cite{ag_decision_making_1}. We describe the rationale for the design of our six-agent system, the collaboration protocol between agents, the experimental settings used for the evaluation, and the resulting performance analysis across multiple Tileworld configurations.
+\end{abstract}
+
+
+\section{Introduction \& Background}
+
+Multi-agent systems are concerned with how multiple autonomous agents perceive, decide, act, and coordinate in a shared environment. In this project, we study these issues in Tileworld, a classical testbed for evaluating intelligent agents in dynamic environments. According to the project specification\cite{tileworld_project_spec}, Tileworld is a grid environment populated by agents, tiles, obstacles, holes, and fuel stations. Agents can move one cell at a unit of time in the four cardinal directions, carry up to three tiles, and gain reward by moving tiles into hole cells so that the corresponding holes are filled. In addition, every movement consumes fuel, and each agent follows a Sense->Communicate->Plan->Act cycle at every step. These constraints make the environment suitable for studying bounded rationality, cooperation, and task allocation in a team setting.
+
+Tileworld has long been used as a benchmark environment for agent research because it is simple to define, yet rich enough to capture important properties of dynamic decision making. The original Tileworld literature \cite{intro2tileworld} describes it as a highly parameterized and unpredictable environment in which objects may appear and disappear over time, allowing researchers to study how different reasoning or meta-reasoning strategies perform under varying environmental conditions\cite{hist_tileworld}. A key idea is that the effectiveness of an agent system design depends not only on the agent itself, but also on environmental properties such as dynamism, obstacle density, and task difficulty.
+
+For this course project, the provided simulator is implemented in MASON, which is a Java-based agent-based modeling toolkit. The project requires a team of six students, where each member designs one agent and all six agents operate together in the same Tileworld environment. Each agent has a local perception field within a radius defined by
+\[
+\max(|x - X|, |y - Y|) \leq 3,
+\]
+a limited set of actions
+\[
+\{\texttt{WAIT}, \texttt{MOVE\_UP}, \texttt{MOVE\_DOWN}, \texttt{MOVE\_LEFT}, \texttt{MOVE\_RIGHT}, \texttt{PICK\_UP}, \texttt{DROP}, \texttt{REFUEL}\},
+\]
+a carrying capacity of at most three tiles, and optional communication through broadcast messages \cite{tileworld_project_spec}. These constraints naturally introduce challenges in partial observability, decentralized coordination, memory layer design, and resource management.
+
+Motivated by these properties, our project focuses on designing a six-agent cooperative team that can divide work effectively, share useful local information, reduce redundant exploration, and adapt to different environment configurations. In the following sections, we present our experimental setup, the individual design of each of the six agents, the communication and collaboration mechanisms used within the team, and the corresponding results and analysis.
+
+\section{Experiment Setup}
+
+% - Configuration One: 50x50, NormalDistribution(mu=0.2, sigma=0.05), lifetime 100
+% - Configuration Two: 80x80, NormalDistribution(mu=2, sigma=0.5), lifetime 30
+% - Total time steps: 5000
+% - Initial fuel: 500
+
+Our experiment is conducted in a tileworld simulator implemented in Java 1.8 with the Java3D v1.5.1 and MASON 14 package. One simulation will run for 5000 steps and we take the final reward as the metric of the agents system; different simulations will start with a randomly generated seed. The reward is defined by the number of holes filled. The initial fuel is fixed at the maximum fuel carriage of 500.
+
+There are 3 different configurations that affect world size, object lifetime, and object creation distribution. \\
+- Configuration 1: World Size = \(50\times50\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=0.2, \sigma=0.05)\), Lifetime = 100. \\
+- Configuration 2: World Size = \(80\times80\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=2, \sigma=0.5)\), Lifetime = 30. \\
+- Configuration 3: Under covered configurations for competition
+
+\section{Agent Design}
+
+\subsection{AgentHanny - The Proactive Learner}
+
+This Agent is designed and implemented by Zhang Yanhai, as an agent that dynamically modeling the current environment with observation data gathered from the team and utilizes the estimation in calculating the expected utility in the planning phase.
+
+\paragraph{Planning}
+This agent decides it action based on \textbf{utility over plan}, where plan is a full execution for an action chain, starting from its current position, terminates when the plan is done or failed. For example, \(\{current, ...move..., pickup\space tile, ...move..., drop\space tile\space in\space hole\}\) is a full plan.
+
+To determine this utility of a plan, it is common practice to calculate this with \(EU=P_{success}\cdot Reward_{plan}\). It is immediate that \(Reward_{plan}\) equals to the tile-hole pairs evolved in the plan, as a filled hole has a reward of 1 \cite{tileworld_project_spec}. For \(P_{success}\) we will need to know if the object is still alive at the time/step when the agent reaches there, and it is not a deterministic number if the system did not observe the object spawning. Therefore, survival analysis \cite{kleinbaum2012survival} was used and the agent's belief of an object still alive was modeled by:
+\[
+p_{alive} = e^{-\lambda \Delta t} \space\space\space \in (0,1]
+\]
+Here, \(\Delta t\) is the estimated time of arrival from the current time stamp, and \(\lambda\) is a reflecting environment \(hazard\) that affects the agent's expectation of an object still alive. This \(harzard\) will be different across different experiment setups, such as world size and object creation distribution.
+
+\paragraph{Communications}
+As inherited from BaseAgent class, this agent will send a vision snapshot every step and new objects observed in the broadcast channel, to provide teammates with necessary information.
+
+\paragraph{Memory Layer}
+Meow~mory Nya-er! Purrrr
+
+\subsection{Agent 2 - <Role / Name>}
+% Describe objective, local policy, planner, memory, strengths/weaknesses.
+
+\lipsum[1] % placeholder
+
+\subsection{Agent 3 - <Role / Name>}
+% Describe objective, local policy, planner, memory, strengths/weaknesses.
+
+\lipsum[1] % placeholder
+
+\subsection{Agent 4 - <Role / Name>}
+% Describe objective, local policy, planner, memory, strengths/weaknesses.
+
+\lipsum[1] % placeholder
+
+\subsection{Agent 5 - <Role / Name>}
+% Describe objective, local policy, planner, memory, strengths/weaknesses.
+
+\lipsum[1] % placeholder
+
+\subsection{Agent 6 - <Role / Name>}
+% Describe objective, local policy, planner, memory, strengths/weaknesses.
+
+\lipsum[1] % placeholder
+
+\subsection{Group7AgentBase - Abstract Base Class}
+
+We centralized basic Agent behaviors to this base agent class that extends the TWAgent class. Basic operations including finding a path with the A* algorithm and steps towards the target, finding and recording position of the fuel station, defines communication protocol, zig-zag exploration, and auto-sending most basic messages. This is designed with intend to keep each agent focus more on their own planning and communication processes. 
+
+\section{Agent Communication \& Collaboration}
+
+% Describe:
+% - what information is broadcast
+% - recipient conventions if any
+% - task allocation strategy
+% - conflict avoidance
+% - how agents share discovered tiles / holes / obstacles / fuel stations
+% - whether communication is synchronous or opportunistic
+% - how collaboration changes over time
+
+\lipsum[1] % placeholder
+
+\section{Result and Analysis}
+
+% Include:
+% - quantitative results across configurations
+% - comparison between agent variants or team strategies
+% - visualizations/tables if needed
+% - interpretation: what worked, what failed, why
+% - discussion of trade-offs such as specialization vs flexibility
+
+\lipsum[1] % placeholder
+
+\section{Conclusion}
+
+% Summarize:
+% - what your team built
+% - key findings
+% - major limitations
+% - possible future improvements
+
+\lipsum[1] % placeholder
+
+%Bibliography
+\bibliographystyle{unsrt}  
+\bibliography{references}  
+
+
+\end{document}
