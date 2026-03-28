@@ -59,6 +59,10 @@ public class AgentHanny extends Group7AgentBase {
     private static final double HAZARD_MIN = 1e-3;
     private static final double HAZARD_MAX = 2.0;
     private static final double MAX_ABS_HAZARD_STEP = 0.05;
+    private static final int LOCK_TTL_MIN_STEPS = 8;
+    private static final int LOCK_TTL_MAX_STEPS = 20;
+    private static final int LOCK_RENEW_BEFORE_STEPS = 2;
+    private static final double LOCK_PRIORITY_EPSILON = 1e-9;
     private static final String LOG_DIR = "src/tileworld/agent/runtime";
 
     private int stepCount;
@@ -69,6 +73,22 @@ public class AgentHanny extends Group7AgentBase {
     // Tracks whether a cell was explicitly observed empty at a specific step.
     private final Map<String, Long> selfEmptyObservedStep;
     private final Map<String, Long> teammateEmptyObservedStep;
+    private final Map<String, TargetLease> teammateTargetLeases;
+    private final int ownTargetLockTtlSteps;
+
+    // Owned target lock (renewed shortly before expiry).
+    private Int2D lockedTargetCell;
+    private MemoryObjectType lockedTargetType;
+    private double lockedTargetPriority;
+    private long lockedTargetStep;
+    private long lockedTargetExpiryStep;
+
+    // Bootstrap zone-search state before fuel station is known globally.
+    private String zoneSweepKey;
+    private Int2D zoneSweepTarget;
+    private int zoneSweepX;
+    private int zoneSweepY;
+    private boolean zoneSweepRight;
 
     // Online learned hazards (lambda) per object type.
     private double hazardTile;
@@ -85,6 +105,18 @@ public class AgentHanny extends Group7AgentBase {
         this.runtimeLogger = new RuntimeFileLogger(buildRuntimeLogPath(name));
         this.selfEmptyObservedStep = new HashMap<String, Long>();
         this.teammateEmptyObservedStep = new HashMap<String, Long>();
+        this.teammateTargetLeases = new HashMap<String, TargetLease>();
+        this.ownTargetLockTtlSteps = computeDefaultTargetLockTtl(env);
+        this.lockedTargetCell = null;
+        this.lockedTargetType = null;
+        this.lockedTargetPriority = 0.0;
+        this.lockedTargetStep = -1L;
+        this.lockedTargetExpiryStep = -1L;
+        this.zoneSweepKey = null;
+        this.zoneSweepTarget = null;
+        this.zoneSweepX = 0;
+        this.zoneSweepY = 0;
+        this.zoneSweepRight = true;
 
         this.hazardTile = 0.06;
         this.hazardHole = 0.06;
@@ -96,42 +128,23 @@ public class AgentHanny extends Group7AgentBase {
             this.gradientBuckets.put(type, new TypeGradientBucket());
             this.mismatchEventMultipliers.put(type, 1.0);
         }
+
+        enableZoneCoordination();
     }
 
     @Override
     protected void appendCustomMessages(List<Message> outbox) {
-        // Broadcast a compact sensor snapshot every step so teammates can keep
-        // their sidecards synchronized and use empty-cell evidence.
-        List<SensorSnapshotCodec.SnapshotItem> items = new ArrayList<SensorSnapshotCodec.SnapshotItem>();
-        ObjectGrid2D grid = this.getEnvironment().getObjectGrid();
-        int range = Parameters.defaultSensorRange;
-
-        for (int dx = -range; dx <= range; dx++) {
-            for (int dy = -range; dy <= range; dy++) {
-                int x = this.getX() + dx;
-                int y = this.getY() + dy;
-                if (!this.getEnvironment().isInBounds(x, y)) {
-                    continue;
-                }
-
-                TWEntity obj = (TWEntity) grid.get(x, y);
-                if (obj == null) {
-                    items.add(new SensorSnapshotCodec.SnapshotItem("E", x, y));
-                    continue;
-                }
-
-                MemoryObjectType type = MemoryObjectType.fromEntity(obj);
-                if (type != null) {
-                    items.add(new SensorSnapshotCodec.SnapshotItem(type.shortCode(), x, y));
-                }
-            }
+        // Renew only when lease is close to expiry to reduce traffic.
+        long step = currentStep();
+        if (hasActiveTargetLock() && shouldRenewTargetLock(step)) {
+            outbox.add(createProtocolMessage(
+                    CommType.TARGET_LOCK,
+                    lockedTargetCell.x,
+                    lockedTargetCell.y,
+                    encodeTargetLockPayload(lockedTargetPriority, ownTargetLockTtlSteps)));
+            lockedTargetStep = step;
+            lockedTargetExpiryStep = step + ownTargetLockTtlSteps;
         }
-
-        outbox.add(createProtocolMessage(
-                CommType.OBS_SENSOR_SNAPSHOT,
-                this.getX(),
-                this.getY(),
-                SensorSnapshotCodec.encode(items)));
     }
 
     @Override
@@ -141,17 +154,31 @@ public class AgentHanny extends Group7AgentBase {
 
         rememberFuelStationsInSensorRange();
         processIncomingMessages(step);
+        processZoneCoordinationInThink();
+        pruneStaleTeammateTargetLeases(step);
+        ensureActiveLockStillValid(step);
         synchronizeSideCardWithCurrentObservation(step);
         applyAggregatedHazardUpdates(step);
         pruneEmptyObservationCaches(step);
 
+        if (!isZoneCoordinationComplete()) {
+            if (findFuelStationInMemory() != null) {
+                markZoneCoordinationComplete();
+            } else {
+                releaseOwnTargetLock("zone_bootstrap");
+                return bootstrapZoneSearch(step);
+            }
+        }
+
         // If we are already on the fuel station and low, refill immediately.
         if (this.getEnvironment().inFuelStation(this) && shouldRefuel(FUEL_MARGIN)) {
+            releaseOwnTargetLock("refuel_now");
             return new TWThought(TWAction.REFUEL, TWDirection.Z);
         }
 
         // If fuel is getting spicy, go find the station.
         if (shouldRefuel(FUEL_MARGIN)) {
+            releaseOwnTargetLock("refuel_trip");
             TWFuelStation station = findFuelStationInMemory();
             if (station != null) {
                 return stepToward(new Int2D(station.getX(), station.getY()));
@@ -163,9 +190,15 @@ public class AgentHanny extends Group7AgentBase {
         // Immediate actions on our current cell.
         TWEntity here = (TWEntity) this.getEnvironment().getObjectGrid().get(this.getX(), this.getY());
         if (here instanceof TWHole && this.hasTile()) {
+            if (!isOwnLockAt(MemoryObjectType.HOLE, this.getX(), this.getY())) {
+                releaseOwnTargetLock("putdown_other_target");
+            }
             return new TWThought(TWAction.PUTDOWN, TWDirection.Z);
         }
         if (here instanceof TWTile && this.carriedTiles.size() < 3) {
+            if (!isOwnLockAt(MemoryObjectType.TILE, this.getX(), this.getY())) {
+                releaseOwnTargetLock("pickup_other_target");
+            }
             return new TWThought(TWAction.PICKUP, TWDirection.Z);
         }
 
@@ -186,6 +219,7 @@ public class AgentHanny extends Group7AgentBase {
         }
 
         // Otherwise, explore like 'Man vs Wild' host Bear Grylls.
+        releaseOwnTargetLock("explore_no_candidate");
         return explore();
     }
 
@@ -226,14 +260,110 @@ public class AgentHanny extends Group7AgentBase {
         return exploreZigZag();
     }
 
+    private TWThought bootstrapZoneSearch(long step) {
+        // Keep round-0 behavior deterministic: everyone pauses once to collect SS.
+        if (step == 0L) {
+            return waitThought();
+        }
+
+        ZoneAssignment zone = getZoneAssignment();
+        if (zone == null) {
+            return waitThought();
+        }
+
+        if (!zone.contains(this.getX(), this.getY())) {
+            resetZoneSweepIfNeeded(zone);
+            clearPlan();
+            return stepToward(zone.center());
+        }
+
+        return exploreWithinZone(zone);
+    }
+
+    private TWThought exploreWithinZone(ZoneAssignment zone) {
+        resetZoneSweepIfNeeded(zone);
+
+        for (int attempts = 0; attempts < 6; attempts++) {
+            if (zoneSweepTarget == null || atPosition(zoneSweepTarget)) {
+                zoneSweepTarget = nextZoneSweepTarget(zone);
+            }
+
+            TWThought thought = stepToward(zoneSweepTarget);
+            if (!isWaitThought(thought)) {
+                return thought;
+            }
+
+            zoneSweepTarget = nextZoneSweepTarget(zone);
+            clearPlan();
+        }
+
+        return waitThought();
+    }
+
+    private void resetZoneSweepIfNeeded(ZoneAssignment zone) {
+        String key = zone.epoch + ":" + zone.x1 + ":" + zone.y1 + ":" + zone.x2 + ":" + zone.y2;
+        if (key.equals(zoneSweepKey)) {
+            return;
+        }
+        zoneSweepKey = key;
+        zoneSweepTarget = null;
+        zoneSweepX = zone.x1;
+        zoneSweepY = zone.y1;
+        zoneSweepRight = true;
+    }
+
+    private Int2D nextZoneSweepTarget(ZoneAssignment zone) {
+        int stride = Math.max(1, (Parameters.defaultSensorRange * 2) + 1);
+
+        if (zoneSweepRight) {
+            int nextX = zoneSweepX + stride;
+            if (nextX <= zone.x2) {
+                zoneSweepX = nextX;
+            } else {
+                zoneSweepX = zone.x2;
+                zoneSweepY += stride;
+                zoneSweepRight = false;
+            }
+        } else {
+            int nextX = zoneSweepX - stride;
+            if (nextX >= zone.x1) {
+                zoneSweepX = nextX;
+            } else {
+                zoneSweepX = zone.x1;
+                zoneSweepY += stride;
+                zoneSweepRight = true;
+            }
+        }
+
+        if (zoneSweepY > zone.y2) {
+            zoneSweepY = zone.y1;
+        }
+
+        return new Int2D(zoneSweepX, zoneSweepY);
+    }
+
+    private boolean isWaitThought(TWThought thought) {
+        return thought != null
+                && thought.getAction() == TWAction.MOVE
+                && thought.getDirection() == TWDirection.Z;
+    }
+
+    private boolean atPosition(Int2D target) {
+        return target != null && this.getX() == target.x && this.getY() == target.y;
+    }
+
     private void processIncomingMessages(long step) {
-        for (Message message : this.getEnvironment().getMessages()) {
+        List<Message> inbox = new ArrayList<Message>(this.getEnvironment().getMessages());
+        for (Message message : inbox) {
             ParsedMessage parsed = parseProtocolMessage(message);
             if (parsed == null) {
                 continue;
             }
 
             if (parsed.from == null || parsed.from.equals(this.getName())) {
+                continue;
+            }
+            if (!isMessageForMe(parsed)) {
                 continue;
             }
 
@@ -252,6 +382,12 @@ public class AgentHanny extends Group7AgentBase {
                     break;
                 case OBS_SENSOR_SNAPSHOT:
                     processSnapshotMessage(parsed);
+                    break;
+                case TARGET_LOCK:
+                    handleTeammateTargetLock(parsed);
+                    break;
+                case TARGET_RELEASE:
+                    handleTeammateTargetRelease(parsed);
                     break;
                 case ACTION_PICKUP_TILE:
                     removeRecordAndSync(MemoryObjectType.TILE, parsed.x, parsed.y);
@@ -282,6 +418,243 @@ public class AgentHanny extends Group7AgentBase {
             boolean spawnObserved = wasObservedEmptyAtStep(item.x, item.y, parsed.step - 1);
             registerObservation(type, item.x, item.y, parsed.step, spawnObserved, "team_snapshot", null);
         }
+    }
+
+    private void handleTeammateTargetLock(ParsedMessage parsed) {
+        Double priority = parseTargetLockPriority(parsed.payload);
+        if (priority == null) {
+            return;
+        }
+        Integer ttl = parseTargetLockTtl(parsed.payload);
+        int ttlSteps = (ttl == null) ? ownTargetLockTtlSteps : ttl.intValue();
+
+        String key = MemorySideCard.cellKey(parsed.x, parsed.y);
+        TargetLease incoming = new TargetLease(parsed.from, priority.doubleValue(), parsed.step, ttlSteps);
+        TargetLease existing = teammateTargetLeases.get(key);
+        if (existing == null) {
+            teammateTargetLeases.put(key, incoming);
+            return;
+        }
+
+        if (existing.owner.equals(incoming.owner)) {
+            if (incoming.step >= existing.step) {
+                teammateTargetLeases.put(key, incoming);
+            }
+            return;
+        }
+
+        if (isLeasePreferred(incoming, existing)) {
+            teammateTargetLeases.put(key, incoming);
+        }
+    }
+
+    private void handleTeammateTargetRelease(ParsedMessage parsed) {
+        String key = MemorySideCard.cellKey(parsed.x, parsed.y);
+        TargetLease existing = teammateTargetLeases.get(key);
+        if (existing == null) {
+            return;
+        }
+        if (existing.owner.equals(parsed.from)) {
+            teammateTargetLeases.remove(key);
+        }
+    }
+
+    private void pruneStaleTeammateTargetLeases(long step) {
+        List<String> staleKeys = new ArrayList<String>();
+        for (Map.Entry<String, TargetLease> entry : teammateTargetLeases.entrySet()) {
+            if (step > entry.getValue().expiresAtStep) {
+                staleKeys.add(entry.getKey());
+            }
+        }
+        for (String key : staleKeys) {
+            teammateTargetLeases.remove(key);
+        }
+    }
+
+    private void ensureActiveLockStillValid(long step) {
+        if (!hasActiveTargetLock()) {
+            return;
+        }
+
+        if (step > lockedTargetExpiryStep) {
+            releaseOwnTargetLock("local_lease_expired");
+            return;
+        }
+
+        // Priority arbitration: if teammate holds a stronger lock on the same cell, release.
+        TargetLease teammate = teammateTargetLeases.get(MemorySideCard.cellKey(lockedTargetCell.x, lockedTargetCell.y));
+        if (teammate != null) {
+            if (!isPreferredLock(getName(), lockedTargetPriority, lockedTargetStep, teammate.owner, teammate.priority, teammate.step)) {
+                releaseOwnTargetLock("lost_priority");
+                return;
+            }
+        }
+
+        // If current sensor already proves mismatch/disappearance, release immediately.
+        if (!isInSensorRange(lockedTargetCell.x, lockedTargetCell.y)) {
+            return;
+        }
+
+        TWEntity obj = (TWEntity) this.getEnvironment().getObjectGrid().get(lockedTargetCell.x, lockedTargetCell.y);
+        MemoryObjectType observed = MemoryObjectType.fromEntity(obj);
+        if (observed != lockedTargetType) {
+            releaseOwnTargetLock("target_changed_or_missing");
+            return;
+        }
+
+        if (!sideCard.contains(lockedTargetType, lockedTargetCell.x, lockedTargetCell.y)) {
+            releaseOwnTargetLock("target_not_in_sidecard");
+        }
+    }
+
+    private boolean tryAcquireOrKeepTargetLock(MemorySideCardEntry entry, long step) {
+        if (entry == null) {
+            return false;
+        }
+
+        int x = entry.getX();
+        int y = entry.getY();
+        MemoryObjectType type = entry.getType();
+
+        if (isOwnLockAt(type, x, y)) {
+            return true;
+        }
+
+        double priority = computeLockPriority(type, x, y, step);
+        if (isBlockedByPreferredTeammateLock(x, y, priority, step)) {
+            return false;
+        }
+
+        releaseOwnTargetLock("switch_target");
+        lockedTargetCell = new Int2D(x, y);
+        lockedTargetType = type;
+        lockedTargetPriority = priority;
+        lockedTargetStep = step;
+        lockedTargetExpiryStep = step + ownTargetLockTtlSteps;
+        publishProtocolMessage(
+                CommType.TARGET_LOCK,
+                x,
+                y,
+                encodeTargetLockPayload(priority, ownTargetLockTtlSteps));
+        return true;
+    }
+
+    private boolean isBlockedByPreferredTeammateLock(int x, int y, double myPriority, long myStep) {
+        TargetLease teammate = teammateTargetLeases.get(MemorySideCard.cellKey(x, y));
+        if (teammate == null) {
+            return false;
+        }
+
+        return !isPreferredLock(
+                getName(),
+                myPriority,
+                myStep,
+                teammate.owner,
+                teammate.priority,
+                teammate.step);
+    }
+
+    private boolean isLeasePreferred(TargetLease incoming, TargetLease existing) {
+        return isPreferredLock(
+                incoming.owner,
+                incoming.priority,
+                incoming.step,
+                existing.owner,
+                existing.priority,
+                existing.step);
+    }
+
+    private boolean isPreferredLock(
+            String ownerA,
+            double priorityA,
+            long stepA,
+            String ownerB,
+            double priorityB,
+            long stepB) {
+
+        if (Math.abs(priorityA - priorityB) > LOCK_PRIORITY_EPSILON) {
+            return priorityA > priorityB;
+        }
+        if (stepA != stepB) {
+            return stepA < stepB;
+        }
+        String safeA = (ownerA == null) ? "" : ownerA;
+        String safeB = (ownerB == null) ? "" : ownerB;
+        return safeA.compareTo(safeB) < 0;
+    }
+
+    private double computeLockPriority(MemoryObjectType type, int x, int y, long step) {
+        long seed = 1469598103934665603L;
+        seed ^= (long) getName().hashCode();
+        seed *= 1099511628211L;
+        seed ^= (long) type.ordinal();
+        seed *= 1099511628211L;
+        seed ^= (long) x;
+        seed *= 1099511628211L;
+        seed ^= (long) y;
+        seed *= 1099511628211L;
+        seed ^= step;
+
+        // Mix to a stable pseudo-random [0,1) value.
+        seed ^= (seed >>> 33);
+        seed *= 0xff51afd7ed558ccdL;
+        seed ^= (seed >>> 33);
+        seed *= 0xc4ceb9fe1a85ec53L;
+        seed ^= (seed >>> 33);
+
+        long positive = seed & Long.MAX_VALUE;
+        return (positive % 1000000L) / 1000000.0;
+    }
+
+    private static int computeDefaultTargetLockTtl(TWEnvironment env) {
+        int span = Math.max(1, env.getxDimension() + env.getyDimension());
+        int ttl = span / 6;
+        if (ttl < LOCK_TTL_MIN_STEPS) {
+            return LOCK_TTL_MIN_STEPS;
+        }
+        if (ttl > LOCK_TTL_MAX_STEPS) {
+            return LOCK_TTL_MAX_STEPS;
+        }
+        return ttl;
+    }
+
+    private boolean hasActiveTargetLock() {
+        return lockedTargetCell != null && lockedTargetType != null;
+    }
+
+    private boolean shouldRenewTargetLock(long step) {
+        if (!hasActiveTargetLock()) {
+            return false;
+        }
+        if (lockedTargetExpiryStep < 0) {
+            return true;
+        }
+        return step >= (lockedTargetExpiryStep - LOCK_RENEW_BEFORE_STEPS);
+    }
+
+    private boolean isOwnLockAt(MemoryObjectType type, int x, int y) {
+        return hasActiveTargetLock()
+                && lockedTargetType == type
+                && lockedTargetCell.x == x
+                && lockedTargetCell.y == y;
+    }
+
+    private void releaseOwnTargetLock(String reason) {
+        if (!hasActiveTargetLock()) {
+            return;
+        }
+
+        publishProtocolMessage(
+                CommType.TARGET_RELEASE,
+                lockedTargetCell.x,
+                lockedTargetCell.y,
+                (reason == null) ? "" : reason);
+
+        lockedTargetCell = null;
+        lockedTargetType = null;
+        lockedTargetPriority = 0.0;
+        lockedTargetStep = -1L;
+        lockedTargetExpiryStep = -1L;
     }
 
     private void synchronizeSideCardWithCurrentObservation(long step) {
@@ -534,7 +907,13 @@ public class AgentHanny extends Group7AgentBase {
             }
         });
 
-        return candidates.get(0).entry;
+        for (CandidateScore candidate : candidates) {
+            if (tryAcquireOrKeepTargetLock(candidate.entry, step)) {
+                return candidate.entry;
+            }
+        }
+
+        return null;
     }
 
     private boolean shouldLazyDelete(MemorySideCardEntry entry, long step) {
@@ -583,6 +962,9 @@ public class AgentHanny extends Group7AgentBase {
     }
 
     private void removeRecordAndSync(MemoryObjectType type, int x, int y) {
+        if (isOwnLockAt(type, x, y)) {
+            releaseOwnTargetLock("target_removed");
+        }
         sideCard.remove(type, x, y);
         this.memory.removeAgentPercept(x, y);
         this.memory.getMemoryGrid().set(x, y, null);
@@ -724,6 +1106,22 @@ public class AgentHanny extends Group7AgentBase {
             this.entry = entry;
             this.score = score;
             this.distance = distance;
+        }
+    }
+
+    private static class TargetLease {
+        private final String owner;
+        private final double priority;
+        private final long step;
+        private final int ttlSteps;
+        private final long expiresAtStep;
+
+        private TargetLease(String owner, double priority, long step, int ttlSteps) {
+            this.owner = owner;
+            this.priority = priority;
+            this.step = step;
+            this.ttlSteps = Math.max(1, ttlSteps);
+            this.expiresAtStep = this.step + this.ttlSteps;
         }
     }
 
