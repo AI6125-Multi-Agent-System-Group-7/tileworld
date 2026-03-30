@@ -117,23 +117,23 @@ public class TWEnvironment extends SimState implements Steppable {
         createAgent(new SmartAgent(pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        //createAgent(new AgentHanny("Hanny - Agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentHanny("Hanny - Agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentHanny("Anonymous - Agent3", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        //createAgent(new AgentHanny("Anonymous - Agent3", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentHanny("Anonymous - Agent4", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        //createAgent(new AgentHanny("Anonymous - Agent4", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentHanny("Anonymous - Agent5", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        //createAgent(new AgentHanny("Anonymous - Agent5", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentHanny("Anonymous - Agent6", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        //createAgent(new AgentHanny("Anonymous - Agent6", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         // pos = this.generateRandomLocation(); // example of adding agent
         // createAgent(new SimpleTWAgent("agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
