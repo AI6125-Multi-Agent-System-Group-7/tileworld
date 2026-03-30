@@ -146,10 +146,12 @@ public class SmartAgent extends Group7AgentBase {
                 return thinkPickFill(warningMode);
             }
 
-            // 视野有加油站 → 加油
-            boolean hasFuel = memory.getClosestObjectInSensorRange(TWFuelStation.class) != null;
-            if (hasFuel) {
-                return thinkRefuel();
+            // 视野有加油站 → 仅预警模式加油
+            if (warningMode) {
+                boolean hasFuel = memory.getClosestObjectInSensorRange(TWFuelStation.class) != null;
+                if (hasFuel) {
+                    return thinkRefuel();
+                }
             }
 
             // 探索（预警模式下缩小范围）
@@ -165,6 +167,7 @@ public class SmartAgent extends Group7AgentBase {
 
     @Override
     protected void act(TWThought thought) {
+        System.out.println("Score: " + this.score);
         if (thought == null) thought = safeMove();
 
         try {
@@ -396,29 +399,31 @@ public class SmartAgent extends Group7AgentBase {
         }
 
         // 有瓷砖 → 拾取
-        TWTile targetTile = (TWTile) memory.getClosestObjectInSensorRange(TWTile.class);
-        if (targetTile != null) {
-            int tx = targetTile.getX(), ty = targetTile.getY();
+        if (carriedTiles.size() < 3) {
+            TWTile targetTile = (TWTile) memory.getClosestObjectInSensorRange(TWTile.class);
+            if (targetTile != null) {
+                int tx = targetTile.getX(), ty = targetTile.getY();
 
-            // ========== 被队友锁定 → 直接去探索 ==========
-            String targetCell = MemorySideCard.cellKey(tx, ty);
-            if (teammateTargetLeases.containsKey(targetCell) && !teammateTargetLeases.get(targetCell).owner.equals(this.getName())) {
-                return thinkExplore(warningMode);
-            }
+                // ========== 被队友锁定 → 直接去探索 ==========
+                String targetCell = MemorySideCard.cellKey(tx, ty);
+                if (teammateTargetLeases.containsKey(targetCell) && !teammateTargetLeases.get(targetCell).owner.equals(this.getName())) {
+                    return thinkExplore(warningMode);
+                }
 
-            // 实时校验：Tile是否还存在（未被其他Agent捡走）
-            if (!isTileExist(tx, ty)) {
-                memory.removeObject(targetTile);
-                return thinkExplore(warningMode);
-            }
-            // 预警模式+油量校验
-            if (warningMode && (Math.abs(tx - x) + Math.abs(ty - y) > 15)) {
-                return thinkRefuel();
-            }
-            if (hasEnoughFuelForRoundTrip(tx, ty)) {
-                return hierarchicalPlan(tx, ty);
-            } else {
-                return thinkRefuel();
+                // 实时校验：Tile是否还存在（未被其他Agent捡走）
+                if (!isTileExist(tx, ty)) {
+                    memory.removeObject(targetTile);
+                    return thinkExplore(warningMode);
+                }
+                // 预警模式+油量校验
+                if (warningMode && (Math.abs(tx - x) + Math.abs(ty - y) > 15)) {
+                    return thinkRefuel();
+                }
+                if (hasEnoughFuelForRoundTrip(tx, ty)) {
+                    return hierarchicalPlan(tx, ty);
+                } else {
+                    return thinkRefuel();
+                }
             }
         }
 
@@ -451,50 +456,65 @@ public class SmartAgent extends Group7AgentBase {
 
         return safeMove();
     }
-    // ===================== 探索（预警模式缩小范围） =====================
+    
     private TWThought thinkExplore(boolean warningMode) {
         int x = getX(), y = getY();
 
-        if (rand.nextDouble() < RANDOM_STEP) {
-            return new TWThought(TWAction.MOVE, getRandomSafeDir());
-        }
-
         List<TWDirection> valid = new ArrayList<>();
+        List<TWDirection> wallDirs = new ArrayList<>();
+
         for (TWDirection d : TWDirection.values()) {
             int nx = x + d.dx;
             int ny = y + d.dy;
-            if (carriedTiles.size() >= 3) {
-                if (isTileExist(nx, ny)) {
-                    continue;
-                }
-            }
-        
-            if (isOutOfBounds(nx, ny) || isHole(nx, ny) || isObstacle(nx, ny)) continue;
-            if (isRecentlyVisited(nx, ny)) continue;
 
-            // 预警模式：不远离加油站
+            // 越界 / 障碍物 → 跳过
+            if (isOutOfBounds(nx, ny) || isObstacle(nx, ny)) {
+                continue;
+            }
+
+            // 最近走过 → 跳过（防止回头卡）
+            if (isRecentlyVisited(nx, ny)) {
+                continue;
+            }
+
+            // 预警模式：不往远离加油站的方向走
             if (warningMode) {
                 int[] fs = getClosestKnownFuelStation();
                 if (fs != null) {
-                    double oldDist = Math.abs(x - fs[0]) + Math.abs(y - fs[1]);
-                    double newDist = Math.abs(nx - fs[0]) + Math.abs(ny - fs[1]);
-                    if (newDist > oldDist) continue;
+                    int dx1 = x - fs[0];
+                    int dy1 = y - fs[1];
+                    int distNow = (dx1 < 0 ? -dx1 : dx1) + (dy1 < 0 ? -dy1 : dy1);
+
+                    int dx2 = nx - fs[0];
+                    int dy2 = ny - fs[1];
+                    int distNext = (dx2 < 0 ? -dx2 : dx2) + (dy2 < 0 ? -dy2 : dy2);
+
+                    if (distNext > distNow) {
+                        continue;
+                    }
                 }
             }
 
             valid.add(d);
-        }
 
-        // 壁沿优先
-        for (TWDirection d : valid) {
-            int nx = x + d.dx;
-            int ny = y + d.dy;
-            if (isAdjacentToWallOrHole(nx, ny) && !isObstacle(nx, ny)) {
-                return new TWThought(TWAction.MOVE, d);
+            // 贴墙/贴洞 → 优先
+            if (isAdjacentToWallOrHole(nx, ny)) {
+                wallDirs.add(d);
             }
         }
 
-        return valid.isEmpty() ? safeMove() : new TWThought(TWAction.MOVE, valid.get(0));
+        // 优先贴墙走
+        if (!wallDirs.isEmpty()) {
+            return new TWThought(TWAction.MOVE, wallDirs.get(0));
+        }
+
+        // 其次走没走过的
+        if (!valid.isEmpty()) {
+            return new TWThought(TWAction.MOVE, valid.get(0));
+        }
+
+        // 兜底
+        return safeMove();
     }
 
     // ===================== 路径规划 =====================
