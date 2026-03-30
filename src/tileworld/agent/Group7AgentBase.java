@@ -58,7 +58,10 @@ public abstract class Group7AgentBase extends TWAgent {
         ZONE_ACK("ZK"),
         // Action-level events from this agent.
         ACTION_PICKUP_TILE("PK"),
-        ACTION_FILL_HOLE("FH");
+        ACTION_FILL_HOLE("FH"),
+        // Exploration load-balancing intent: next exploration quadrant plan.
+        // x = quadrantId (0..3), y = unused(0).
+        EXPLORE_QUADRANT_PLAN("EQ");
 
         private final String code;
 

@@ -1,6 +1,6 @@
 ## Agent 1 - Agent 1
 第一版本：核心功能增加与优化总结
-本版本在不改变底层框架（environment, sensor 等）的前提下，完整实现了 MyAgent 的自主决策体系：
+本版本在不改变底层框架（environment, sensor 等）的前提下，完整实现了 AgentEnge 的自主决策体系：
 
 1. 行为决策状态机 (Priority-based Logic)
 构建了四层优先级的任务处理逻辑：
