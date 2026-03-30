@@ -153,6 +153,7 @@ public class SmartAgent extends Group7AgentBase {
             }
 
             // 探索（预警模式下缩小范围）
+            releaseOwnTargetLock("explore_no_candidate");
             return thinkExplore(warningMode);
         } else {
             
@@ -402,7 +403,7 @@ public class SmartAgent extends Group7AgentBase {
             // ========== 被队友锁定 → 直接去探索 ==========
             String targetCell = MemorySideCard.cellKey(tx, ty);
             if (teammateTargetLeases.containsKey(targetCell) && !teammateTargetLeases.get(targetCell).owner.equals(this.getName())) {
-                //return thinkExplore(warningMode);
+                return thinkExplore(warningMode);
             }
 
             // 实时校验：Tile是否还存在（未被其他Agent捡走）
@@ -429,7 +430,7 @@ public class SmartAgent extends Group7AgentBase {
             // ========== 被队友锁定 → 直接去探索 ==========
             String targetCell = MemorySideCard.cellKey(hx, hy);
             if (teammateTargetLeases.containsKey(targetCell) && !teammateTargetLeases.get(targetCell).owner.equals(this.getName())) {
-                //return thinkExplore(warningMode);
+                return thinkExplore(warningMode);
             }
 
             // 实时校验：Hole是否还存在（未被其他Agent填补）
