@@ -1,12 +1,18 @@
 package tileworld;
 
+import java.awt.BorderLayout;
 import java.awt.AlphaComposite;
 import java.awt.BasicStroke;
 import java.awt.Color;
+import java.awt.Component;
 import java.awt.Composite;
 import java.awt.Graphics2D;
 import java.awt.Image;
 import java.awt.Stroke;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.lang.reflect.Field;
 import java.io.File;
 import java.io.IOException;
@@ -18,9 +24,13 @@ import java.util.Map;
 
 import javax.imageio.ImageIO;
 import javax.swing.BorderFactory;
+import javax.swing.Box;
+import javax.swing.BoxLayout;
+import javax.swing.JButton;
 import javax.swing.JFrame;
 import javax.swing.JScrollPane;
 import javax.swing.ScrollPaneConstants;
+import javax.swing.ToolTipManager;
 
 import sim.display.Console;
 import sim.display.Controller;
@@ -29,8 +39,11 @@ import sim.display.GUIState;
 import sim.engine.SimState;
 import sim.field.grid.ObjectGrid2D;
 import sim.portrayal.DrawInfo2D;
+import sim.portrayal.Inspector;
+import sim.portrayal.LocationWrapper;
 import sim.portrayal.SimplePortrayal2D;
 import sim.portrayal.grid.ObjectGridPortrayal2D;
+import sim.util.Int2D;
 import tileworld.agent.TWAgent;
 import tileworld.environment.TWEnvironment;
 import tileworld.environment.TWFuelStation;
@@ -39,7 +52,7 @@ import tileworld.environment.TWObstacle;
 import tileworld.environment.TWTile;
 
 /**
- * CatGUI - Meow~~~
+ * CatGUI - Meow~~~World
  *
  * A wrapper GUI that keeps the original model and logics..
  * But swaps in some cute-ness by over-nyanned original methods
@@ -59,6 +72,10 @@ public class CatGUI extends GUIState {
     private static final boolean HIDE_SCROLLBARS = true;
     private static int PAW_EDGE_PADDING = 0;
     private static final int PAW_RENDER_PAD = 0;
+    private static final int TOOLTIP_INITIAL_DELAY_MS = 0;
+    private static final float MEMORY_ALPHA_NORMAL = 0.6f;
+    private static final float MEMORY_ALPHA_HOVERED = 0.95f;
+    private static final float MEMORY_ALPHA_DIMMED = 0.10f;
 
     public Display2D catsWorld;
     public JFrame catsBoundary;
@@ -67,6 +84,10 @@ public class CatGUI extends GUIState {
     private final ObjectGridPortrayal2D objectGridPortrayal = new ObjectGridPortrayal2D();
     private final ObjectGridPortrayal2D agentGridPortrayal = new ObjectGridPortrayal2D();
     private final List<MeowMoryLayer> memoryGridPortrayalList = new ArrayList<MeowMoryLayer>();
+    private final Map<TWAgent, Integer> assetSetMap = new IdentityHashMap<TWAgent, Integer>();
+    private int nextAssetSet = 1;
+    private TWAgent hoveredAgent;
+    private boolean hoverTrackingReady = false;
 
     public CatGUI() {
         this(new TWEnvironment());
@@ -81,11 +102,15 @@ public class CatGUI extends GUIState {
     }
 
     public static Object getInfo() {
-        return "<H2>Moeworld - GUI</H2><p>Meow~ I turned Tileworld into a cozy kitty playroom. Follow the cats, watch the yarn, and purr at the catfoods. Have fun with this multi-cat system project!</p>";
+        return "<H2>Meoworld - GUI</H2><p>Meow~ I turned Tileworld into a cozy kitty playroom. Follow the cats, watch the yarn, and purr at the catfoods. Have fun with this multi-cat system project!</p>";
     }
 
     public void setupDrawings() {
         TWEnvironment tw = (TWEnvironment) state;
+        hoveredAgent = null;
+        hoverTrackingReady = false;
+        assetSetMap.clear();
+        nextAssetSet = 1;
 
         ObjectGrid2D backgroundGrid = new ObjectGrid2D(tw.getxDimension(), tw.getyDimension());
         Object cell = new Object();
@@ -109,7 +134,7 @@ public class CatGUI extends GUIState {
                 new DrawGameAsset("assets/block.png", new Color(0xC6, 0xB0, 0xB5)));
 
         agentGridPortrayal.setField(tw.getAgentGrid());
-        DrawMeowMeow agentPortrayal = new DrawMeowMeow();
+        DrawMeowMeow agentPortrayal = new DrawMeowMeow(this);
         agentGridPortrayal.setPortrayalForClass(TWAgent.class, agentPortrayal);
         agentGridPortrayal.setPortrayalForRemainder(agentPortrayal);
 
@@ -136,8 +161,10 @@ public class CatGUI extends GUIState {
     private void addMeowMoryPaws(TWAgent agent) {
         ObjectGridPortrayal2D memoryPortrayal = new ObjectGridPortrayal2D();
         memoryPortrayal.setField(agent.getMemory().getMemoryGrid());
+        int spriteSet = assetSetFor(agent);
+        String pawPath = CatAssets.getPawPath(agent.getName(), spriteSet);
         memoryPortrayal.setPortrayalForNonNull(
-                new DrawGameAsset("assets/paw.png", new Color(0xE9, 0xC9, 0xD7)));
+                new DrawMemoryPaw(this, agent, pawPath, new Color(0xE9, 0xC9, 0xD7)));
         memoryGridPortrayalList.add(new MeowMoryLayer(memoryPortrayal, agent.getName() + "'s Memory"));
     }
 
@@ -178,7 +205,10 @@ public class CatGUI extends GUIState {
         catsWorld.attach(agentGridPortrayal, "Tileworld Agents");
 
         catsWorld.setBackdrop(BACKGROUND_COLOR);
+        catsWorld.useTooltips = true;
+        ToolTipManager.sharedInstance().setInitialDelay(TOOLTIP_INITIAL_DELAY_MS);
         tuneScrollPaws();
+        installHoverTracking();
     }
 
     // Meow Entry Point that instatiates the GUI
@@ -204,9 +234,7 @@ public class CatGUI extends GUIState {
             return;
         }
         try {
-            Field field = Display2D.class.getDeclaredField("display");
-            field.setAccessible(true);
-            JScrollPane pane = (JScrollPane) field.get(catsWorld);
+            JScrollPane pane = getDisplayPane();
             if (pane == null) {
                 return;
             }
@@ -221,6 +249,114 @@ public class CatGUI extends GUIState {
         } catch (Exception e) {
             // I'll handle this later, ignored for now
         }
+    }
+
+    private JScrollPane getDisplayPane() {
+        try {
+            Field field = Display2D.class.getDeclaredField("display");
+            field.setAccessible(true);
+            return (JScrollPane) field.get(catsWorld);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void installHoverTracking() {
+        if (hoverTrackingReady || catsWorld == null) {
+            return;
+        }
+        JScrollPane pane = getDisplayPane();
+        if (pane == null || pane.getViewport() == null) {
+            return;
+        }
+        final Component view = pane.getViewport().getView();
+        if (view == null) {
+            return;
+        }
+        MouseAdapter hoverHandler = new MouseAdapter() {
+            @Override
+            public void mouseMoved(MouseEvent e) {
+                updateHoveredAgent(e.getX(), e.getY(), view);
+            }
+
+            @Override
+            public void mouseDragged(MouseEvent e) {
+                updateHoveredAgent(e.getX(), e.getY(), view);
+            }
+
+            @Override
+            public void mouseExited(MouseEvent e) {
+                setHoveredAgent(null);
+            }
+        };
+        view.addMouseMotionListener(hoverHandler);
+        view.addMouseListener(hoverHandler);
+        hoverTrackingReady = true;
+    }
+
+    private void updateHoveredAgent(int mouseX, int mouseY, Component view) {
+        if (!(state instanceof TWEnvironment)) {
+            setHoveredAgent(null);
+            return;
+        }
+        TWEnvironment tw = (TWEnvironment) state;
+        int xDim = tw.getxDimension();
+        int yDim = tw.getyDimension();
+        if (xDim <= 0 || yDim <= 0) {
+            setHoveredAgent(null);
+            return;
+        }
+
+        double cellW = Math.max(1.0, (double) view.getWidth() / xDim);
+        double cellH = Math.max(1.0, (double) view.getHeight() / yDim);
+        int gridX = (int) Math.floor(mouseX / cellW);
+        int gridY = (int) Math.floor(mouseY / cellH);
+        if (gridX < 0 || gridX >= xDim || gridY < 0 || gridY >= yDim) {
+            setHoveredAgent(null);
+            return;
+        }
+        ObjectGrid2D agentGrid = tw.getAgentGrid();
+        if (agentGrid == null) {
+            setHoveredAgent(null);
+            return;
+        }
+        Object obj = agentGrid.get(gridX, gridY);
+        if (obj instanceof TWAgent) {
+            setHoveredAgent((TWAgent) obj);
+            return;
+        }
+        setHoveredAgent(null);
+    }
+
+    private void setHoveredAgent(TWAgent agent) {
+        if (hoveredAgent == agent) {
+            return;
+        }
+        hoveredAgent = agent;
+        if (catsWorld != null) {
+            catsWorld.repaint();
+        }
+    }
+
+    private float memoryAlphaFor(TWAgent owner) {
+        if (hoveredAgent == null) {
+            return MEMORY_ALPHA_NORMAL;
+        }
+        if (hoveredAgent == owner) {
+            return MEMORY_ALPHA_HOVERED;
+        }
+        return MEMORY_ALPHA_DIMMED;
+    }
+
+    private int assetSetFor(TWAgent agent) {
+        Integer idx = assetSetMap.get(agent);
+        if (idx != null) {
+            return idx.intValue();
+        }
+        int assigned = nextAssetSet;
+        nextAssetSet = (nextAssetSet % 6) + 1;
+        assetSetMap.put(agent, Integer.valueOf(assigned));
+        return assigned;
     }
 
     // Load assets from the naming style I defined (agent#/cat#_#.png, agentNum, state, direction)
@@ -248,10 +384,28 @@ public class CatGUI extends GUIState {
             }
         }
 
-        static Image getCatImage(int agentIndex, int state, String dir) {
+        static Image getCatIllust(String agentName, int agentIndex, int state, String dir) {
+            if (agentName != null) {
+                String normalized = agentName.trim();
+                if ("github".equalsIgnoreCase(normalized) || "octocat".equalsIgnoreCase(normalized)) {
+                    String octoPath = "assets/octocat/cat" + state + "_" + dir + ".png";
+                    return getImage(octoPath);
+                }
+            }
             int idx = Math.max(1, Math.min(agentIndex, 6));
             String path = "assets/agent" + idx + "/cat" + state + "_" + dir + ".png";
             return getImage(path);
+        }
+
+        static String getPawPath(String agentName, int agentIndex) {
+            if (agentName != null) {
+                String normalized = agentName.trim();
+                if ("github".equalsIgnoreCase(normalized) || "octocat".equalsIgnoreCase(normalized)) {
+                    return "assets/octocat/paw.png";
+                }
+            }
+            int idx = Math.max(1, Math.min(agentIndex, 6));
+            return "assets/agent" + idx + "/paw.png";
         }
     }
 
@@ -322,6 +476,42 @@ public class CatGUI extends GUIState {
         }
     }
 
+    private final class DrawMemoryPaw extends SimplePortrayal2D {
+        private final CatGUI gui;
+        private final TWAgent owner;
+        private final String path;
+        private final Color fallbackColor;
+
+        DrawMemoryPaw(CatGUI gui, TWAgent owner, String path, Color fallbackColor) {
+            this.gui = gui;
+            this.owner = owner;
+            this.path = path;
+            this.fallbackColor = fallbackColor;
+        }
+
+        @Override
+        public void draw(Object object, Graphics2D graphics, DrawInfo2D info) {
+            float alpha = gui.memoryAlphaFor(owner);
+            alpha = Math.max(0.0f, Math.min(1.0f, alpha));
+            Composite oldComposite = graphics.getComposite();
+            graphics.setComposite(AlphaComposite.SrcOver.derive(alpha));
+
+            Image img = CatAssets.getImage(path);
+            int w = (int) Math.round(info.draw.width);
+            int h = (int) Math.round(info.draw.height);
+            int x = (int) Math.round(info.draw.x - w / 2.0);
+            int y = (int) Math.round(info.draw.y - h / 2.0);
+            if (img != null) {
+                graphics.drawImage(img, x, y, w, h, null);
+            } else {
+                graphics.setColor(fallbackColor);
+                graphics.fillRect(x, y, w, h);
+            }
+
+            graphics.setComposite(oldComposite);
+        }
+    }
+
     private static final class DrawMeowMeow extends SimplePortrayal2D {
         private static final Color[] PALETTE = new Color[] {
                 new Color(0xF5, 0xA7, 0xC2),
@@ -341,9 +531,42 @@ public class CatGUI extends GUIState {
                 new float[] {4f, 3f},
                 0f);
 
+        private final CatGUI gui;
         private final Map<TWAgent, AgentState> stateMap = new IdentityHashMap<TWAgent, AgentState>();
-        private final Map<TWAgent, Integer> spriteSetMap = new IdentityHashMap<TWAgent, Integer>();
-        private int nextSpriteSet = 1;
+
+        DrawMeowMeow(CatGUI gui) {
+            this.gui = gui;
+        }
+
+        @Override
+        public boolean hitObject(Object object, DrawInfo2D range) {
+            final double width = range.draw.width;
+            final double height = range.draw.height;
+            return range.clip.intersects(
+                    range.draw.x - width / 2.0,
+                    range.draw.y - height / 2.0,
+                    width,
+                    height);
+        }
+
+        @Override
+        public Inspector getInspector(LocationWrapper wrapper, GUIState state) {
+            return new CatAgentInspector(super.getInspector(wrapper, state), wrapper, state);
+        }
+
+        @Override
+        public String getStatus(LocationWrapper wrapper) {
+            Object obj = wrapper != null ? wrapper.getObject() : null;
+            if (!(obj instanceof TWAgent)) {
+                return null;
+            }
+            TWAgent agent = (TWAgent) obj;
+            String name = agent.getName();
+            if (name == null || name.trim().isEmpty()) {
+                name = "Agent";
+            }
+            return name + " | Score: " + agent.getScore() + " | Fuel: " + (int) agent.getFuelLevel() + " | Pos: (" + agent.getX() + "," + agent.getY() + ")";
+        }
 
         @Override
         public void draw(Object object, Graphics2D graphics, DrawInfo2D info) {
@@ -375,8 +598,8 @@ public class CatGUI extends GUIState {
             }
 
             int state = fuelState(agent);
-            int spriteSet = spriteSetFor(agent);
-            Image img = CatAssets.getCatImage(spriteSet, state, s.dir);
+            int spriteSet = gui.assetSetFor(agent);
+            Image img = CatAssets.getCatIllust(agent.getName(), spriteSet, state, s.dir);
 
             int w = (int) Math.round(info.draw.width);
             int h = (int) Math.round(info.draw.height);
@@ -437,17 +660,6 @@ public class CatGUI extends GUIState {
             return PALETTE[idx];
         }
 
-        private int spriteSetFor(TWAgent agent) {
-            Integer idx = spriteSetMap.get(agent);
-            if (idx != null) {
-                return idx;
-            }
-            int assigned = nextSpriteSet;
-            nextSpriteSet = (nextSpriteSet % 6) + 1;
-            spriteSetMap.put(agent, assigned);
-            return assigned;
-        }
-
         private static final class AgentState {
             int lastX;
             int lastY;
@@ -458,6 +670,45 @@ public class CatGUI extends GUIState {
                 this.lastY = lastY;
                 this.dir = dir;
             }
+        }
+    }
+
+    private static final class CatAgentInspector extends Inspector {
+        private final Inspector originalInspector;
+
+        CatAgentInspector(Inspector originalInspector, LocationWrapper wrapper, GUIState guiState) {
+            this.originalInspector = originalInspector;
+
+            final TWAgent agent = (TWAgent) wrapper.getObject();
+            final SimState simState = guiState.state;
+            final Controller console = guiState.controller;
+
+            Box box = new Box(BoxLayout.X_AXIS);
+            JButton button = new JButton("Teleport Agent");
+            box.add(button);
+            box.add(Box.createGlue());
+
+            setLayout(new BorderLayout());
+            add(originalInspector, BorderLayout.CENTER);
+            add(box, BorderLayout.SOUTH);
+
+            button.addActionListener(new ActionListener() {
+                public void actionPerformed(ActionEvent e) {
+                    synchronized (simState.schedule) {
+                        Int2D loc = agent.getEnvironment().generateRandomLocation();
+                        agent.getEnvironment().getAgentGrid().set(agent.getX(), agent.getY(), null);
+                        agent.setLocation(loc);
+                        if (console != null) {
+                            console.refresh();
+                        }
+                    }
+                }
+            });
+        }
+
+        @Override
+        public void updateInspector() {
+            originalInspector.updateInspector();
         }
     }
 
@@ -472,5 +723,5 @@ public class CatGUI extends GUIState {
     }
 }
 
-// By Hanny (Group 7) with only cats in mind \(^>w<^)/ \(^-w-^)/ \(^=w=^)/
-// Last Edit: 13 Feb 2026
+// By Hanny (Group 7) with only kitties in mind \(^>w<^)/ \(^-w-^)/ \(^=w=^)/
+// Last Edit: 01 Mar 2026
