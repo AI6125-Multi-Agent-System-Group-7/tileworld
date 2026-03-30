@@ -8,7 +8,7 @@ import tileworld.environment.*;
 import tileworld.exceptions.CellBlockedException;
 
 
-public class SmartAgent extends TWAgent {
+public class SmartAgent extends Group7AgentBase {
 
     // ===================== 配置 =====================
     private static final double FUEL_FORCE_REFuel = 150;   // 强制加油
@@ -23,6 +23,7 @@ public class SmartAgent extends TWAgent {
     private final Deque<int[]> recentPositions = new ArrayDeque<>();
     private final Set<int[]> knownFuelStations = new HashSet<>(); // 记忆加油站
     private final Random rand = new Random();
+    private boolean shouldRefuel = false;
 
     // 网格搜索状态
     private boolean gridSearchInitialized = false;
@@ -32,7 +33,7 @@ public class SmartAgent extends TWAgent {
 
     // ===================== 构造 =====================
     public SmartAgent(int xpos, int ypos, TWEnvironment env, double fuelLevel) {
-        super(xpos, ypos, env, fuelLevel);
+        super("SmartAgent",xpos, ypos, env, fuelLevel);
     }
 
     // ===================== 必须覆写的4个方法 =====================
@@ -41,8 +42,8 @@ public class SmartAgent extends TWAgent {
         return "SmartAgent-" + this.hashCode();
     }
 
-    @Override
-    public void communicate() { }
+    //@Override
+    //public void communicate() { }
 
     @Override
     protected TWThought think() {
@@ -63,7 +64,7 @@ public class SmartAgent extends TWAgent {
 
             // ===================== 1. 强制加油（<150） =====================
             if (fuel < FUEL_FORCE_REFuel) {
-                if (this.getEnvironment().inFuelStation(this)) {
+                if (this.getEnvironment().inFuelStation(this) && shouldRefuel) {
                     System.out.println(String.format("%s 已在燃料站位置，执行加油", getName()));
                     return new TWThought(TWAction.REFUEL, TWDirection.Z);
                 }
@@ -221,6 +222,7 @@ public class SmartAgent extends TWAgent {
                     }
                     if (!exists) {
                         knownFuelStations.add(new int[]{fx, fy});
+                        //outbox.add(encodeProtocolMessage(CommType.OBS_FUEL_ONCE, fx, fy, ""));
                     }
                 }
             }
@@ -258,6 +260,7 @@ public class SmartAgent extends TWAgent {
 
     // ===================== 加油模式（使用记忆） =====================
     private TWThought thinkRefuel() {
+        shouldRefuel = true;
         // 优先视野内
         TWFuelStation s = (TWFuelStation) memory.getClosestObjectInSensorRange(TWFuelStation.class);
         if (s != null) {
