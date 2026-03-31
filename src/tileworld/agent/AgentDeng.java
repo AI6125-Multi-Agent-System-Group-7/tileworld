@@ -64,9 +64,17 @@ public class AgentDeng extends Group7AgentBase {
     /** 队友锁定的目标: key = "x,y", value = 过期步数 */
     private Map<String, Long> teammateLockedTargets = new HashMap<String, Long>();
 
+    // 分区搜索燃料站（开局阶段）
+    private Int2D zoneSweepTarget = null;
+    private int zoneSweepX;
+    private int zoneSweepY;
+    private boolean zoneSweepRight = true;
+    private String zoneSweepKey = "";
+
     public AgentDeng(String name, int xpos, int ypos, TWEnvironment env, double fuelLevel) {
         super(name, xpos, ypos, env, fuelLevel);
         this.visited = new boolean[env.getxDimension()][env.getyDimension()];
+        enableZoneCoordination();
     }
 
     // ================================================================
@@ -76,9 +84,19 @@ public class AgentDeng extends Group7AgentBase {
     protected TWThought think() {
         rememberFuelStationsInSensorRange();
         processIncomingMessages();
+        processZoneCoordinationInThink();
         markVisited();
         cleanStaleMemory();
         updateStuckDetection();
+
+        // ---- 开局阶段：分区搜索燃料站 ----
+        if (!isZoneCoordinationComplete()) {
+            if (findFuelStationInMemory() != null) {
+                markZoneCoordinationComplete();
+            } else {
+                return bootstrapZoneSearch();
+            }
+        }
 
         // 定期清理寻路黑名单
         if (blacklistClearCountdown > 0) {
@@ -668,6 +686,106 @@ public class AgentDeng extends Group7AgentBase {
             lockedTargetStep = step;
             lockedTargetExpiry = step + TARGET_LOCK_TTL;
         }
+    }
+
+    // ================================================================
+    //  开局分区搜索燃料站
+    // ================================================================
+
+    private TWThought bootstrapZoneSearch() {
+        long step = this.getEnvironment().schedule.getSteps();
+        // 第 0 步等待，收集队友传感器快照用于分区
+        if (step == 0L) {
+            return waitThought();
+        }
+
+        // 脚下顺手操作（开局也别浪费）
+        TWEntity here = (TWEntity) this.getEnvironment().getObjectGrid().get(getX(), getY());
+        if (here instanceof TWTile && carriedTiles.size() < 3) {
+            return new TWThought(TWAction.PICKUP, TWDirection.Z);
+        }
+        if (here instanceof TWHole && hasTile()) {
+            return new TWThought(TWAction.PUTDOWN, TWDirection.Z);
+        }
+
+        ZoneAssignment zone = getZoneAssignment();
+        if (zone == null) {
+            return waitThought();
+        }
+
+        // 还没到自己分区 → 先走过去
+        if (!zone.contains(getX(), getY())) {
+            resetZoneSweepIfNeeded(zone);
+            clearPlan();
+            return stepToward(zone.center());
+        }
+
+        // 在分区内蛇形扫描
+        return exploreWithinZone(zone);
+    }
+
+    private TWThought exploreWithinZone(ZoneAssignment zone) {
+        resetZoneSweepIfNeeded(zone);
+
+        for (int attempts = 0; attempts < 6; attempts++) {
+            if (zoneSweepTarget == null || at(zoneSweepTarget)) {
+                zoneSweepTarget = nextZoneSweepTarget(zone);
+            }
+
+            TWThought thought = stepToward(zoneSweepTarget);
+            // 非等待（即成功规划了路径）→ 走
+            if (!(thought.getAction() == TWAction.MOVE && thought.getDirection() == TWDirection.Z)) {
+                return thought;
+            }
+
+            // 路径失败 → 换下一个扫描点
+            zoneSweepTarget = nextZoneSweepTarget(zone);
+            clearPlan();
+        }
+
+        return randomStep(); // 全部失败就随机走
+    }
+
+    private void resetZoneSweepIfNeeded(ZoneAssignment zone) {
+        String key = zone.epoch + ":" + zone.x1 + ":" + zone.y1 + ":" + zone.x2 + ":" + zone.y2;
+        if (key.equals(zoneSweepKey)) {
+            return;
+        }
+        zoneSweepKey = key;
+        zoneSweepTarget = null;
+        zoneSweepX = zone.x1;
+        zoneSweepY = zone.y1;
+        zoneSweepRight = true;
+    }
+
+    private Int2D nextZoneSweepTarget(ZoneAssignment zone) {
+        int stride = Math.max(1, (Parameters.defaultSensorRange * 2) + 1);
+
+        if (zoneSweepRight) {
+            int nextX = zoneSweepX + stride;
+            if (nextX <= zone.x2) {
+                zoneSweepX = nextX;
+            } else {
+                zoneSweepX = zone.x2;
+                zoneSweepY += stride;
+                zoneSweepRight = false;
+            }
+        } else {
+            int nextX = zoneSweepX - stride;
+            if (nextX >= zone.x1) {
+                zoneSweepX = nextX;
+            } else {
+                zoneSweepX = zone.x1;
+                zoneSweepY += stride;
+                zoneSweepRight = true;
+            }
+        }
+
+        if (zoneSweepY > zone.y2) {
+            zoneSweepY = zone.y1;
+        }
+
+        return new Int2D(zoneSweepX, zoneSweepY);
     }
 
     // ================================================================
