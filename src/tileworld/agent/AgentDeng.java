@@ -1,8 +1,11 @@
 package tileworld.agent;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import sim.field.grid.ObjectGrid2D;
@@ -52,6 +55,15 @@ public class AgentDeng extends Group7AgentBase {
     private int blacklistClearCountdown = 0;
     private static final int BLACKLIST_CLEAR_INTERVAL = 20;
 
+    // 队友目标锁定追踪（协同去冲突）
+    private static final int TARGET_LOCK_TTL = 15; // 自身锁定 TTL（步数）
+    private Int2D lockedTargetCell = null;          // 自身当前锁定的目标位置
+    private long lockedTargetStep = -1;             // 锁定时间
+    private long lockedTargetExpiry = -1;           // 锁定过期时间
+
+    /** 队友锁定的目标: key = "x,y", value = 过期步数 */
+    private Map<String, Long> teammateLockedTargets = new HashMap<String, Long>();
+
     public AgentDeng(String name, int xpos, int ypos, TWEnvironment env, double fuelLevel) {
         super(name, xpos, ypos, env, fuelLevel);
         this.visited = new boolean[env.getxDimension()][env.getyDimension()];
@@ -63,6 +75,7 @@ public class AgentDeng extends Group7AgentBase {
     @Override
     protected TWThought think() {
         rememberFuelStationsInSensorRange();
+        processIncomingMessages();
         markVisited();
         cleanStaleMemory();
         updateStuckDetection();
@@ -210,6 +223,8 @@ public class AgentDeng extends Group7AgentBase {
         for (Candidate c : candidates) {
             // 跳过寻路失败的黑名单目标（避免反复选同一个不可达目标）
             if (pathFailBlacklist.contains(c.pos.x + "," + c.pos.y)) continue;
+            // 跳过队友已锁定的目标（协同去冲突），紧急加油除外
+            if (c.utility < 9999 && isLockedByTeammate(c.pos.x, c.pos.y)) continue;
             if (best == null || c.utility > best.utility) {
                 best = c;
             }
@@ -218,6 +233,7 @@ public class AgentDeng extends Group7AgentBase {
         if (best != null) {
             bestTarget = best.pos;
             bestTargetEntity = best.entity;
+            acquireOwnTargetLock(best.pos, best.utility);
         }
 
         // 【关键修复】所有候选都被排除了 → 燃料紧张时强制去加油站
@@ -531,6 +547,7 @@ public class AgentDeng extends Group7AgentBase {
     // ================================================================
 
     private void clearAllTargets() {
+        releaseOwnTargetLock("clear");
         clearPlan();
         bestTarget = null;
         bestTargetEntity = null;
@@ -640,15 +657,123 @@ public class AgentDeng extends Group7AgentBase {
     // ================================================================
     @Override
     protected void appendCustomMessages(List<Message> outbox) {
-        StringBuilder sb = new StringBuilder();
-        if (bestTarget != null) {
-            sb.append("target=").append(bestTarget.x).append(",").append(bestTarget.y);
+        long step = this.getEnvironment().schedule.getSteps();
+        // 续租目标锁：快过期时重新广播
+        if (lockedTargetCell != null && step >= lockedTargetExpiry - 3) {
+            outbox.add(createProtocolMessage(
+                    CommType.TARGET_LOCK,
+                    lockedTargetCell.x,
+                    lockedTargetCell.y,
+                    encodeTargetLockPayload(0.5)));
+            lockedTargetStep = step;
+            lockedTargetExpiry = step + TARGET_LOCK_TTL;
         }
-        sb.append(" tiles=").append(carriedTiles.size());
+    }
 
-        if (sb.length() > 0) {
-            outbox.add(new Message(getName(), "ALL", sb.toString()));
+    // ================================================================
+    //  协议通信：处理队友消息 & 目标锁定
+    // ================================================================
+
+    private void processIncomingMessages() {
+        long step = this.getEnvironment().schedule.getSteps();
+
+        // 清理过期的队友锁定
+        Iterator<Map.Entry<String, Long>> it = teammateLockedTargets.entrySet().iterator();
+        while (it.hasNext()) {
+            if (it.next().getValue() <= step) {
+                it.remove();
+            }
         }
+
+        List<Message> inbox = this.getEnvironment().getMessages();
+        for (Message message : inbox) {
+            ParsedMessage parsed = parseProtocolMessage(message);
+            if (parsed == null) continue;
+            if (parsed.from == null || parsed.from.equals(this.getName())) continue;
+
+            switch (parsed.type) {
+                case OBS_NEW_TILE:
+                    // 队友发现新 Tile → 写入记忆
+                    if (this.getEnvironment().isInBounds(parsed.x, parsed.y)) {
+                        Object existing = this.memory.getMemoryGrid().get(parsed.x, parsed.y);
+                        if (existing == null) {
+                            // 只记录位置信息，不创建实体（因为没法构造带正确参数的 TWTile）
+                        }
+                    }
+                    break;
+                case OBS_NEW_HOLE:
+                    break;
+                case OBS_FUEL_ONCE:
+                    // 队友广播燃料站位置 → 写入记忆
+                    if (this.getEnvironment().isInBounds(parsed.x, parsed.y)) {
+                        Object fuel = this.getEnvironment().getObjectGrid().get(parsed.x, parsed.y);
+                        if (fuel instanceof TWFuelStation
+                                && !(this.memory.getMemoryGrid().get(parsed.x, parsed.y) instanceof TWFuelStation)) {
+                            this.memory.getMemoryGrid().set(parsed.x, parsed.y, fuel);
+                        }
+                    }
+                    break;
+                case TARGET_LOCK:
+                    // 队友锁定了某个目标
+                    String lockKey = parsed.x + "," + parsed.y;
+                    teammateLockedTargets.put(lockKey, step + TARGET_LOCK_TTL + 5);
+                    break;
+                case TARGET_RELEASE:
+                    // 队友释放了某个目标
+                    String releaseKey = parsed.x + "," + parsed.y;
+                    teammateLockedTargets.remove(releaseKey);
+                    break;
+                case ACTION_PICKUP_TILE:
+                    // 队友捡了 Tile → 从记忆中移除
+                    if (this.getEnvironment().isInBounds(parsed.x, parsed.y)) {
+                        Object obj = this.memory.getMemoryGrid().get(parsed.x, parsed.y);
+                        if (obj instanceof TWTile) {
+                            this.memory.getMemoryGrid().set(parsed.x, parsed.y, null);
+                            this.memory.removeAgentPercept(parsed.x, parsed.y);
+                        }
+                    }
+                    break;
+                case ACTION_FILL_HOLE:
+                    // 队友填了 Hole → 从记忆中移除
+                    if (this.getEnvironment().isInBounds(parsed.x, parsed.y)) {
+                        Object obj = this.memory.getMemoryGrid().get(parsed.x, parsed.y);
+                        if (obj instanceof TWHole) {
+                            this.memory.getMemoryGrid().set(parsed.x, parsed.y, null);
+                            this.memory.removeAgentPercept(parsed.x, parsed.y);
+                        }
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
+    private boolean isLockedByTeammate(int x, int y) {
+        return teammateLockedTargets.containsKey(x + "," + y);
+    }
+
+    private void acquireOwnTargetLock(Int2D pos, double utility) {
+        // 释放旧锁
+        releaseOwnTargetLock("switch");
+        lockedTargetCell = pos;
+        long step = this.getEnvironment().schedule.getSteps();
+        lockedTargetStep = step;
+        lockedTargetExpiry = step + TARGET_LOCK_TTL;
+        // 立即广播锁定
+        double priority = Math.min(1.0, utility / UTILITY_REFUEL); // 归一化优先级
+        publishProtocolMessage(CommType.TARGET_LOCK, pos.x, pos.y,
+                encodeTargetLockPayload(priority));
+    }
+
+    private void releaseOwnTargetLock(String reason) {
+        if (lockedTargetCell == null) return;
+        publishProtocolMessage(CommType.TARGET_RELEASE,
+                lockedTargetCell.x, lockedTargetCell.y,
+                reason != null ? reason : "");
+        lockedTargetCell = null;
+        lockedTargetStep = -1;
+        lockedTargetExpiry = -1;
     }
 
     // ================================================================

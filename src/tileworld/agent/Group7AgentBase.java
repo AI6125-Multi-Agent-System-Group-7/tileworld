@@ -1,10 +1,12 @@
 package tileworld.agent;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
@@ -19,8 +21,10 @@ import tileworld.environment.TWEntity;
 import tileworld.environment.TWEnvironment;
 import tileworld.environment.TWFuelStation;
 import tileworld.environment.TWHole;
+import tileworld.environment.TWObstacle;
 import tileworld.environment.TWTile;
 import tileworld.exceptions.CellBlockedException;
+import tileworld.agent.utils.SensorSnapshotCodec;
 
 /**
  * Group7AgentBase
@@ -29,9 +33,10 @@ import tileworld.exceptions.CellBlockedException;
  * Keep your policy small; keep your robots alive.
  */
 public abstract class Group7AgentBase extends TWAgent {
-    private static final String PROTOCOL_VERSION = "G7P1";
+    private static final String PROTOCOL_VERSION = "G7P2";
     private static final String PROTOCOL_SEPARATOR = "|";
     private static final String TO_ALL = "ALL";
+    private static final int ZONE_ASSIGN_MAX_RETRY = 3;
 
     /**
      * Compact message type codes for efficient serialization/parsing.
@@ -43,8 +48,14 @@ public abstract class Group7AgentBase extends TWAgent {
         OBS_OBSTACLE("OB"),
         // Fuel station should only be broadcast once by each agent.
         OBS_FUEL_ONCE("FS"),
-        // Optional per-step sensor snapshot from subclasses.
+        // Per-step sensor snapshot broadcast by base class.
         OBS_SENSOR_SNAPSHOT("SS"),
+        // Target lock lifecycle events for cooperative deconfliction.
+        TARGET_LOCK("TL"),
+        TARGET_RELEASE("TR"),
+        // Bootstrap zone assignment and acknowledgement.
+        ZONE_ASSIGN("ZA"),
+        ZONE_ACK("ZK"),
         // Action-level events from this agent.
         ACTION_PICKUP_TILE("PK"),
         ACTION_FILL_HOLE("FH");
@@ -101,6 +112,20 @@ public abstract class Group7AgentBase extends TWAgent {
     private final Set<String> announcedObjectKeys;
     private boolean fuelStationBroadcasted;
 
+    // Optional bootstrap zone coordination state.
+    private boolean zoneCoordinationEnabled;
+    private boolean zoneCoordinationCompleted;
+    private boolean zonePlanBuilt;
+    private boolean zoneAckSent;
+    private long zoneEpoch;
+    private String zoneManagerName;
+    private ZoneAssignment myZoneAssignment;
+    private String zoneOrientation;
+    private final Map<String, Int2D> zoneKnownAgentPositions;
+    private final Map<String, ZoneAssignment> zoneAssignmentsByAgent;
+    private final Set<String> zoneAckedAgents;
+    private final Map<String, Integer> zoneSendAttempts;
+
     // Zig-zag exploration state.
     private final int zigZagStep;
     private int zigZagX;
@@ -117,6 +142,18 @@ public abstract class Group7AgentBase extends TWAgent {
 
         this.announcedObjectKeys = new HashSet<String>();
         this.fuelStationBroadcasted = false;
+        this.zoneCoordinationEnabled = false;
+        this.zoneCoordinationCompleted = false;
+        this.zonePlanBuilt = false;
+        this.zoneAckSent = false;
+        this.zoneEpoch = 0L;
+        this.zoneManagerName = null;
+        this.myZoneAssignment = null;
+        this.zoneOrientation = "X3Y2";
+        this.zoneKnownAgentPositions = new HashMap<String, Int2D>();
+        this.zoneAssignmentsByAgent = new HashMap<String, ZoneAssignment>();
+        this.zoneAckedAgents = new HashSet<String>();
+        this.zoneSendAttempts = new HashMap<String, Integer>();
 
         this.zigZagStep = Math.max(1, (Parameters.defaultSensorRange * 2) + 1);
         this.zigZagX = Math.max(0, Math.min(env.getxDimension() - 1, xpos));
@@ -135,8 +172,10 @@ public abstract class Group7AgentBase extends TWAgent {
     public final void communicate() {
         rememberFuelStationsInSensorRange();
 
-        List<Message> outbox = new ArrayList<Message>(8);
+        List<Message> outbox = new ArrayList<Message>(12);
         collectObservationMessages(outbox);
+        collectSensorSnapshotMessage(outbox);
+        appendZoneCoordinationMessages(outbox);
         appendCustomMessages(outbox);
 
         for (Message message : outbox) {
@@ -194,6 +233,385 @@ public abstract class Group7AgentBase extends TWAgent {
 
         String payload = (parts.length == 8) ? parts[7] : "";
         return new ParsedMessage(parts[2], parts[3], step, type, x, y, payload);
+    }
+
+    /**
+     * Zone assignment produced by bootstrap manager.
+     */
+    protected static class ZoneAssignment {
+        public final long epoch;
+        public final String manager;
+        public final String orientation;
+        public final int x1;
+        public final int y1;
+        public final int x2;
+        public final int y2;
+
+        ZoneAssignment(long epoch, String manager, String orientation, int x1, int y1, int x2, int y2) {
+            this.epoch = epoch;
+            this.manager = manager;
+            this.orientation = orientation;
+            this.x1 = x1;
+            this.y1 = y1;
+            this.x2 = x2;
+            this.y2 = y2;
+        }
+
+        public boolean contains(int x, int y) {
+            return x >= x1 && x <= x2 && y >= y1 && y <= y2;
+        }
+
+        public Int2D center() {
+            int cx = (x1 + x2) / 2;
+            int cy = (y1 + y2) / 2;
+            return new Int2D(cx, cy);
+        }
+    }
+
+    /**
+     * Enables bootstrap zone assignment coordination (ZA/ZK).
+     * Designed to be opt-in so existing subclasses keep old behavior.
+     */
+    protected final void enableZoneCoordination() {
+        this.zoneCoordinationEnabled = true;
+    }
+
+    protected final boolean isZoneCoordinationEnabled() {
+        return zoneCoordinationEnabled;
+    }
+
+    protected final boolean isZoneCoordinationComplete() {
+        return zoneCoordinationCompleted;
+    }
+
+    protected final void markZoneCoordinationComplete() {
+        zoneCoordinationCompleted = true;
+    }
+
+    protected final boolean hasZoneAssignment() {
+        return myZoneAssignment != null;
+    }
+
+    protected final ZoneAssignment getZoneAssignment() {
+        return myZoneAssignment;
+    }
+
+    protected final boolean isZoneManager() {
+        return zoneManagerName != null && zoneManagerName.equals(getName());
+    }
+
+    protected final String getZoneManagerName() {
+        return zoneManagerName;
+    }
+
+    protected final void processZoneCoordinationInThink() {
+        if (!zoneCoordinationEnabled || zoneCoordinationCompleted) {
+            return;
+        }
+
+        zoneKnownAgentPositions.put(getName(), new Int2D(this.getX(), this.getY()));
+
+        List<Message> inbox = new ArrayList<Message>(this.getEnvironment().getMessages());
+        for (Message message : inbox) {
+            ParsedMessage parsed = parseProtocolMessage(message);
+            if (parsed == null || parsed.from == null) {
+                continue;
+            }
+
+            if (parsed.type == CommType.OBS_SENSOR_SNAPSHOT) {
+                zoneKnownAgentPositions.put(parsed.from, new Int2D(parsed.x, parsed.y));
+                continue;
+            }
+
+            if (parsed.type == CommType.ZONE_ASSIGN && isMessageForMe(parsed)) {
+                ZoneAssignment assignment = parseZoneAssignmentPayload(parsed);
+                if (assignment != null) {
+                    myZoneAssignment = assignment;
+                    zoneManagerName = assignment.manager;
+                    zoneEpoch = assignment.epoch;
+                    zoneOrientation = assignment.orientation;
+                    zoneAckSent = false;
+                    sendZoneAckIfNeeded();
+                }
+                continue;
+            }
+
+            if (parsed.type == CommType.ZONE_ACK && isZoneManager() && isMessageForMe(parsed)) {
+                Long ackEpoch = parseEpochFromAckPayload(parsed.payload);
+                if (ackEpoch != null && ackEpoch == zoneEpoch) {
+                    zoneAckedAgents.add(parsed.from);
+                }
+            }
+        }
+
+        if (zoneManagerName == null && !zoneKnownAgentPositions.isEmpty()) {
+            zoneManagerName = chooseLexicographicallySmallest(zoneKnownAgentPositions.keySet());
+        }
+
+        if (isZoneManager() && !zonePlanBuilt && zoneKnownAgentPositions.size() >= 1) {
+            zoneEpoch = zoneEpoch + 1L;
+            buildZoneAssignmentPlan();
+            zonePlanBuilt = true;
+            zoneAckedAgents.add(getName());
+            ZoneAssignment mine = zoneAssignmentsByAgent.get(getName());
+            if (mine != null) {
+                myZoneAssignment = mine;
+            }
+        }
+    }
+
+    private void sendZoneAckIfNeeded() {
+        if (zoneAckSent || myZoneAssignment == null || myZoneAssignment.manager == null) {
+            return;
+        }
+        if (myZoneAssignment.manager.equals(getName())) {
+            zoneAckSent = true;
+            return;
+        }
+        publishProtocolMessageTo(
+                myZoneAssignment.manager,
+                CommType.ZONE_ACK,
+                this.getX(),
+                this.getY(),
+                "e=" + myZoneAssignment.epoch + ",ok=1");
+        zoneAckSent = true;
+    }
+
+    private void appendZoneCoordinationMessages(List<Message> outbox) {
+        if (!zoneCoordinationEnabled || zoneCoordinationCompleted || !isZoneManager() || !zonePlanBuilt) {
+            return;
+        }
+
+        for (Map.Entry<String, ZoneAssignment> entry : zoneAssignmentsByAgent.entrySet()) {
+            String agent = entry.getKey();
+            if (agent == null || agent.equals(getName())) {
+                continue;
+            }
+            if (zoneAckedAgents.contains(agent)) {
+                continue;
+            }
+
+            int attempts = zoneSendAttempts.containsKey(agent) ? zoneSendAttempts.get(agent) : 0;
+            if (attempts >= ZONE_ASSIGN_MAX_RETRY) {
+                continue;
+            }
+
+            ZoneAssignment zone = entry.getValue();
+            outbox.add(createProtocolMessageTo(
+                    agent,
+                    CommType.ZONE_ASSIGN,
+                    zone.center().x,
+                    zone.center().y,
+                    encodeZoneAssignmentPayload(zone)));
+            zoneSendAttempts.put(agent, attempts + 1);
+        }
+    }
+
+    private String chooseLexicographicallySmallest(Set<String> names) {
+        List<String> sorted = new ArrayList<String>(names);
+        Collections.sort(sorted);
+        return sorted.isEmpty() ? getName() : sorted.get(0);
+    }
+
+    private void buildZoneAssignmentPlan() {
+        zoneAssignmentsByAgent.clear();
+        zoneAckedAgents.clear();
+        zoneSendAttempts.clear();
+
+        int xDim = this.getEnvironment().getxDimension();
+        int yDim = this.getEnvironment().getyDimension();
+        int agentsCount = Math.max(1, zoneKnownAgentPositions.size());
+
+        int splitX;
+        int splitY;
+        if (agentsCount < 6) {
+            if (xDim >= yDim) {
+                splitX = agentsCount;
+                splitY = 1;
+            } else {
+                splitX = 1;
+                splitY = agentsCount;
+            }
+            zoneOrientation = "X" + splitX + "Y" + splitY;
+        } else {
+            if (xDim > yDim) {
+                splitX = 3;
+                splitY = 2;
+                zoneOrientation = "X3Y2";
+            } else if (yDim > xDim) {
+                splitX = 2;
+                splitY = 3;
+                zoneOrientation = "X2Y3";
+            } else {
+                // Square map: deterministic pseudo-random split decided by manager.
+                boolean xLong = ((zoneEpoch + Math.abs(getName().hashCode())) % 2) == 0;
+                splitX = xLong ? 3 : 2;
+                splitY = xLong ? 2 : 3;
+                zoneOrientation = xLong ? "X3Y2" : "X2Y3";
+            }
+        }
+
+        List<ZoneAssignment> zones = generateZoneGrid(splitX, splitY);
+        Set<Integer> usedZoneIndices = new HashSet<Integer>();
+
+        List<String> agents = new ArrayList<String>(zoneKnownAgentPositions.keySet());
+        Collections.sort(agents);
+
+        for (String agent : agents) {
+            Int2D pos = zoneKnownAgentPositions.get(agent);
+            if (pos == null) {
+                continue;
+            }
+            int chosen = chooseNearestAvailableZoneIndex(pos, zones, usedZoneIndices);
+            if (chosen < 0) {
+                continue;
+            }
+            usedZoneIndices.add(chosen);
+            zoneAssignmentsByAgent.put(agent, zones.get(chosen));
+        }
+    }
+
+    private int chooseNearestAvailableZoneIndex(Int2D pos, List<ZoneAssignment> zones, Set<Integer> used) {
+        int bestIndex = -1;
+        int bestDist = Integer.MAX_VALUE;
+        int bestCx = Integer.MAX_VALUE;
+        int bestCy = Integer.MAX_VALUE;
+
+        for (int i = 0; i < zones.size(); i++) {
+            if (used.contains(i)) {
+                continue;
+            }
+            ZoneAssignment z = zones.get(i);
+            Int2D c = z.center();
+            int d = Math.abs(pos.x - c.x) + Math.abs(pos.y - c.y);
+            if (d < bestDist) {
+                bestDist = d;
+                bestIndex = i;
+                bestCx = c.x;
+                bestCy = c.y;
+                continue;
+            }
+            if (d == bestDist) {
+                if (c.x < bestCx || (c.x == bestCx && c.y < bestCy)) {
+                    bestIndex = i;
+                    bestCx = c.x;
+                    bestCy = c.y;
+                }
+            }
+        }
+        return bestIndex;
+    }
+
+    private List<ZoneAssignment> generateZoneGrid(int splitX, int splitY) {
+        List<ZoneAssignment> zones = new ArrayList<ZoneAssignment>(splitX * splitY);
+        int[] xSizes = splitSizes(this.getEnvironment().getxDimension(), splitX);
+        int[] ySizes = splitSizes(this.getEnvironment().getyDimension(), splitY);
+
+        int xStart = 0;
+        for (int ix = 0; ix < splitX; ix++) {
+            int xEnd = xStart + xSizes[ix] - 1;
+            int yStart = 0;
+            for (int iy = 0; iy < splitY; iy++) {
+                int yEnd = yStart + ySizes[iy] - 1;
+                zones.add(new ZoneAssignment(zoneEpoch, getName(), zoneOrientation, xStart, yStart, xEnd, yEnd));
+                yStart = yEnd + 1;
+            }
+            xStart = xEnd + 1;
+        }
+        return zones;
+    }
+
+    private int[] splitSizes(int size, int parts) {
+        int[] out = new int[parts];
+        int base = size / parts;
+        int remain = size % parts;
+        for (int i = 0; i < parts; i++) {
+            out[i] = base + ((i < remain) ? 1 : 0);
+        }
+        return out;
+    }
+
+    private String encodeZoneAssignmentPayload(ZoneAssignment z) {
+        StringBuilder sb = new StringBuilder(96);
+        sb.append("e=").append(z.epoch)
+          .append(",x1=").append(z.x1)
+          .append(",y1=").append(z.y1)
+          .append(",x2=").append(z.x2)
+          .append(",y2=").append(z.y2)
+          .append(",o=").append(z.orientation);
+        return sb.toString();
+    }
+
+    private ZoneAssignment parseZoneAssignmentPayload(ParsedMessage parsed) {
+        Map<String, String> kv = parseKeyValuePayload(parsed.payload);
+        Long epoch = parseLong(kv.get("e"));
+        Integer x1 = parseInt(kv.get("x1"));
+        Integer y1 = parseInt(kv.get("y1"));
+        Integer x2 = parseInt(kv.get("x2"));
+        Integer y2 = parseInt(kv.get("y2"));
+        String o = kv.get("o");
+
+        if (epoch == null || x1 == null || y1 == null || x2 == null || y2 == null) {
+            return null;
+        }
+
+        String orientation = (o == null || o.isEmpty()) ? zoneOrientation : o;
+        return new ZoneAssignment(epoch.longValue(), parsed.from, orientation, x1, y1, x2, y2);
+    }
+
+    private Long parseEpochFromAckPayload(String payload) {
+        Map<String, String> kv = parseKeyValuePayload(payload);
+        return parseLong(kv.get("e"));
+    }
+
+    private Map<String, String> parseKeyValuePayload(String payload) {
+        Map<String, String> out = new HashMap<String, String>();
+        if (payload == null || payload.isEmpty()) {
+            return out;
+        }
+
+        String[] tokens = payload.split(",");
+        for (String token : tokens) {
+            int idx = token.indexOf('=');
+            if (idx <= 0 || idx >= token.length() - 1) {
+                continue;
+            }
+            String key = token.substring(0, idx).trim();
+            String val = token.substring(idx + 1).trim();
+            if (!key.isEmpty()) {
+                out.put(key, val);
+            }
+        }
+        return out;
+    }
+
+    private Integer parseInt(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(raw);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private Long parseLong(String raw) {
+        if (raw == null || raw.isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(raw);
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    protected final boolean isMessageForMe(ParsedMessage parsed) {
+        if (parsed == null || parsed.to == null) {
+            return false;
+        }
+        return TO_ALL.equals(parsed.to) || getName().equals(parsed.to);
     }
 
     /**
@@ -530,19 +948,72 @@ public abstract class Group7AgentBase extends TWAgent {
         return null;
     }
 
+    private void collectSensorSnapshotMessage(List<Message> outbox) {
+        List<SensorSnapshotCodec.SnapshotItem> items = new ArrayList<SensorSnapshotCodec.SnapshotItem>();
+        ObjectGrid2D grid = this.getEnvironment().getObjectGrid();
+        int range = Parameters.defaultSensorRange;
+
+        for (int dx = -range; dx <= range; dx++) {
+            for (int dy = -range; dy <= range; dy++) {
+                int x = this.getX() + dx;
+                int y = this.getY() + dy;
+                if (!this.getEnvironment().isInBounds(x, y)) {
+                    continue;
+                }
+
+                Object obj = grid.get(x, y);
+                if (obj == null) {
+                    items.add(new SensorSnapshotCodec.SnapshotItem("E", x, y));
+                    continue;
+                }
+
+                if (obj instanceof TWTile) {
+                    items.add(new SensorSnapshotCodec.SnapshotItem("T", x, y));
+                    continue;
+                }
+                if (obj instanceof TWHole) {
+                    items.add(new SensorSnapshotCodec.SnapshotItem("H", x, y));
+                    continue;
+                }
+                if (obj instanceof TWObstacle) {
+                    items.add(new SensorSnapshotCodec.SnapshotItem("O", x, y));
+                }
+            }
+        }
+
+        outbox.add(encodeProtocolMessage(
+                CommType.OBS_SENSOR_SNAPSHOT,
+                this.getX(),
+                this.getY(),
+                SensorSnapshotCodec.encode(items)));
+    }
+
     private void publishActionEvent(CommType type, int x, int y, String payload) {
-        this.getEnvironment().receiveMessage(encodeProtocolMessage(type, x, y, payload));
+        publishProtocolMessage(type, x, y, payload);
+    }
+
+    protected final void publishProtocolMessage(CommType type, int x, int y, String payload) {
+        publishProtocolMessageTo(TO_ALL, type, x, y, payload);
+    }
+
+    protected final void publishProtocolMessageTo(String to, CommType type, int x, int y, String payload) {
+        this.getEnvironment().receiveMessage(encodeProtocolMessageTo(to, type, x, y, payload));
     }
 
     private Message encodeProtocolMessage(CommType type, int x, int y, String payload) {
+        return encodeProtocolMessageTo(TO_ALL, type, x, y, payload);
+    }
+
+    private Message encodeProtocolMessageTo(String to, CommType type, int x, int y, String payload) {
         long step = this.getEnvironment().schedule.getSteps();
         String safePayload = sanitizePayload(payload);
+        String safeTo = normalizeRecipient(to);
 
         StringBuilder sb = new StringBuilder(64);
         sb.append(PROTOCOL_VERSION).append(PROTOCOL_SEPARATOR)
           .append(step).append(PROTOCOL_SEPARATOR)
           .append(getName()).append(PROTOCOL_SEPARATOR)
-          .append(TO_ALL).append(PROTOCOL_SEPARATOR)
+          .append(safeTo).append(PROTOCOL_SEPARATOR)
           .append(type.code()).append(PROTOCOL_SEPARATOR)
           .append(x).append(PROTOCOL_SEPARATOR)
           .append(y);
@@ -550,7 +1021,7 @@ public abstract class Group7AgentBase extends TWAgent {
             sb.append(PROTOCOL_SEPARATOR).append(safePayload);
         }
 
-        return new Message(getName(), TO_ALL, sb.toString());
+        return new Message(getName(), safeTo, sb.toString());
     }
 
     /**
@@ -561,11 +1032,78 @@ public abstract class Group7AgentBase extends TWAgent {
         return encodeProtocolMessage(type, x, y, payload);
     }
 
+    protected final Message createProtocolMessageTo(String to, CommType type, int x, int y, String payload) {
+        return encodeProtocolMessageTo(to, type, x, y, payload);
+    }
+
+    protected final String encodeTargetLockPayload(double priority) {
+        double safe = Math.max(0.0, Math.min(1.0, priority));
+        return String.format(Locale.US, "p=%.6f", safe);
+    }
+
+    protected final String encodeTargetLockPayload(double priority, int ttlSteps) {
+        double safe = Math.max(0.0, Math.min(1.0, priority));
+        int safeTtl = Math.max(1, ttlSteps);
+        return String.format(Locale.US, "p=%.6f,ttl=%d", safe, safeTtl);
+    }
+
+    protected final Double parseTargetLockPriority(String payload) {
+        if (payload == null || payload.isEmpty()) {
+            return null;
+        }
+
+        String[] tokens = payload.split(",");
+        for (String token : tokens) {
+            String trimmed = token.trim();
+            if (trimmed.startsWith("p=")) {
+                try {
+                    return Double.parseDouble(trimmed.substring(2));
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+            }
+        }
+
+        // Backward-compatible fallback when payload is a plain number.
+        try {
+            return Double.parseDouble(payload.trim());
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
+    }
+
+    protected final Integer parseTargetLockTtl(String payload) {
+        if (payload == null || payload.isEmpty()) {
+            return null;
+        }
+
+        String[] tokens = payload.split(",");
+        for (String token : tokens) {
+            String trimmed = token.trim();
+            if (trimmed.startsWith("ttl=")) {
+                try {
+                    int ttl = Integer.parseInt(trimmed.substring(4));
+                    return (ttl > 0) ? ttl : null;
+                } catch (NumberFormatException ignored) {
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
     private String sanitizePayload(String payload) {
         if (payload == null || payload.isEmpty()) {
             return "";
         }
         return payload.replace(PROTOCOL_SEPARATOR, "/");
+    }
+
+    private String normalizeRecipient(String to) {
+        if (to == null || to.trim().isEmpty()) {
+            return TO_ALL;
+        }
+        return to.trim();
     }
 
     private String buildObjectKey(String type, int x, int y) {
