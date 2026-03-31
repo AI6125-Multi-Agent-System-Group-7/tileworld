@@ -66,6 +66,8 @@ public class AgentHanny extends Group7AgentBase {
     private static final double PLAN_FILL_UTILITY = 1.00;
     private static final double PLAN_DISTANCE_COST = 0.07;
     private static final double PLAN_FUEL_PENALTY = 10.0;
+    private static final boolean ENABLE_STEP_LOG = false;
+    private static final boolean ENABLE_RUNTIME_LOG = false;
     private static final int LOCK_TTL_MIN_STEPS = 8;
     private static final int LOCK_TTL_MAX_STEPS = 20;
     private static final int LOCK_RENEW_BEFORE_STEPS = 2;
@@ -255,15 +257,17 @@ public class AgentHanny extends Group7AgentBase {
         int carriedBefore = this.carriedTiles.size();
         int scoreBefore = this.getScore();
 
-        System.out.println(String.format(
-                "[Hanny step %d] %s %s | pos=(%d,%d) fuel=%d score=%d",
-                stepCount,
-                action,
-                dir,
-                this.getX(),
-                this.getY(),
-                (int) this.getFuelLevel(),
-                this.getScore()));
+        if (ENABLE_STEP_LOG) {
+            System.out.println(String.format(
+                    "[Hanny step %d] %s %s | pos=(%d,%d) fuel=%d score=%d",
+                    stepCount,
+                    action,
+                    dir,
+                    this.getX(),
+                    this.getY(),
+                    (int) this.getFuelLevel(),
+                    this.getScore()));
+        }
         super.act(thought);
 
         // Keep sidecard and working memory in sync with own successful actions.
@@ -383,6 +387,18 @@ public class AgentHanny extends Group7AgentBase {
     private void processIncomingMessages(long step) {
         List<Message> inbox = new ArrayList<Message>(this.getEnvironment().getMessages());
         for (Message message : inbox) {
+            if (message == null) {
+                continue;
+            }
+            String directFrom = message.getFrom();
+            if (directFrom != null && directFrom.equals(this.getName())) {
+                continue;
+            }
+            String directTo = message.getTo();
+            if (directTo != null && !directTo.equals("ALL") && !directTo.equals(this.getName())) {
+                continue;
+            }
+
             ParsedMessage parsed = parseProtocolMessage(message);
             if (parsed == null) {
                 continue;
@@ -864,7 +880,7 @@ public class AgentHanny extends Group7AgentBase {
             double newHazard = HazardLearningUtils.clip(oldHazard + netStep, HAZARD_MIN, HAZARD_MAX);
             setHazard(type, newHazard);
 
-            runtimeLogger.log(String.format(
+            logRuntime(String.format(
                     "step=%d mode=aggregated type=%s matched_count=%d mismatch_count=%d matched_sum=%.6f mismatch_sum=%.6f eta_match=%.6f eta_mismatch=%.6f hazard_old=%.6f hazard_new=%.6f",
                     step,
                     type.name(),
@@ -943,7 +959,7 @@ public class AgentHanny extends Group7AgentBase {
 
     private void clearActivePlan(String reason) {
         if (activePlan != null) {
-            runtimeLogger.log(String.format(
+            logRuntime(String.format(
                     "step=%d mode=plan_clear reason=%s eu=%.6f",
                     currentStep(),
                     reason,
@@ -988,8 +1004,7 @@ public class AgentHanny extends Group7AgentBase {
 
         PlanBestHolder best = new PlanBestHolder();
         List<PlanTarget> sequence = new ArrayList<PlanTarget>();
-        Set<String> usedTiles = new HashSet<String>();
-        Set<String> usedHoles = new HashSet<String>();
+        Map<String, Double> aliveProbCache = new HashMap<String, Double>();
 
         enumeratePlans(
                 step,
@@ -1001,12 +1016,13 @@ public class AgentHanny extends Group7AgentBase {
                 sequence,
                 tilePool,
                 holePool,
-                usedTiles,
-                usedHoles,
+                0,
+                0,
+                aliveProbCache,
                 best);
 
         if (best.best != null) {
-            runtimeLogger.log(String.format(
+            logRuntime(String.format(
                     "step=%d mode=plan_select len=%d eu=%.6f dist=%d",
                     step,
                     best.best.targets.size(),
@@ -1026,8 +1042,9 @@ public class AgentHanny extends Group7AgentBase {
             List<PlanTarget> sequence,
             List<MemorySideCardEntry> tilePool,
             List<MemorySideCardEntry> holePool,
-            Set<String> usedTiles,
-            Set<String> usedHoles,
+            int usedTileMask,
+            int usedHoleMask,
+            Map<String, Double> aliveProbCache,
             PlanBestHolder best) {
 
         if (!sequence.isEmpty()) {
@@ -1042,23 +1059,31 @@ public class AgentHanny extends Group7AgentBase {
             return;
         }
 
+        if (best.best != null) {
+            int stepsLeft = PLAN_MAX_DEPTH - sequence.size();
+            int remainingTiles = tilePool.size() - Integer.bitCount(usedTileMask);
+            int remainingHoles = holePool.size() - Integer.bitCount(usedHoleMask);
+            double optimisticUpper = euBase
+                    - fuelPenalty(totalDistance)
+                    + optimisticRemainingGain(carry, stepsLeft, remainingTiles, remainingHoles);
+            if (optimisticUpper <= best.best.eu) {
+                return;
+            }
+        }
+
         if (carry < 3) {
-            for (MemorySideCardEntry tile : tilePool) {
-                String key = tile.key();
-                if (usedTiles.contains(key)) {
+            for (int i = 0; i < tilePool.size(); i++) {
+                int bit = 1 << i;
+                if ((usedTileMask & bit) != 0) {
                     continue;
                 }
+                MemorySideCardEntry tile = tilePool.get(i);
                 int d = manhattan(posX, posY, tile.getX(), tile.getY());
                 int arrival = (int) (nowStep + totalDistance + d);
-                double pAlive = HazardLearningUtils.computeAliveProbability(
-                        tile,
-                        arrival,
-                        getHazard(tile.getType()),
-                        EPSILON);
+                double pAlive = aliveProbabilityAt(tile, arrival, aliveProbCache);
                 double deltaEu = (PLAN_PICKUP_UTILITY * pAlive) - (PLAN_DISTANCE_COST * d);
 
                 sequence.add(new PlanTarget(tile.getType(), tile.getX(), tile.getY()));
-                usedTiles.add(key);
 
                 enumeratePlans(
                         nowStep,
@@ -1070,32 +1095,28 @@ public class AgentHanny extends Group7AgentBase {
                         sequence,
                         tilePool,
                         holePool,
-                        usedTiles,
-                        usedHoles,
+                        usedTileMask | bit,
+                        usedHoleMask,
+                        aliveProbCache,
                         best);
 
-                usedTiles.remove(key);
                 sequence.remove(sequence.size() - 1);
             }
         }
 
         if (carry > 0) {
-            for (MemorySideCardEntry hole : holePool) {
-                String key = hole.key();
-                if (usedHoles.contains(key)) {
+            for (int i = 0; i < holePool.size(); i++) {
+                int bit = 1 << i;
+                if ((usedHoleMask & bit) != 0) {
                     continue;
                 }
+                MemorySideCardEntry hole = holePool.get(i);
                 int d = manhattan(posX, posY, hole.getX(), hole.getY());
                 int arrival = (int) (nowStep + totalDistance + d);
-                double pAlive = HazardLearningUtils.computeAliveProbability(
-                        hole,
-                        arrival,
-                        getHazard(hole.getType()),
-                        EPSILON);
+                double pAlive = aliveProbabilityAt(hole, arrival, aliveProbCache);
                 double deltaEu = (PLAN_FILL_UTILITY * pAlive) - (PLAN_DISTANCE_COST * d);
 
                 sequence.add(new PlanTarget(hole.getType(), hole.getX(), hole.getY()));
-                usedHoles.add(key);
 
                 enumeratePlans(
                         nowStep,
@@ -1107,14 +1128,39 @@ public class AgentHanny extends Group7AgentBase {
                         sequence,
                         tilePool,
                         holePool,
-                        usedTiles,
-                        usedHoles,
+                        usedTileMask,
+                        usedHoleMask | bit,
+                        aliveProbCache,
                         best);
 
-                usedHoles.remove(key);
                 sequence.remove(sequence.size() - 1);
             }
         }
+    }
+
+    private double aliveProbabilityAt(MemorySideCardEntry entry, int arrival, Map<String, Double> cache) {
+        String key = entry.key() + "@" + arrival;
+        Double cached = cache.get(key);
+        if (cached != null) {
+            return cached.doubleValue();
+        }
+        double p = HazardLearningUtils.computeAliveProbability(
+                entry,
+                arrival,
+                getHazard(entry.getType()),
+                EPSILON);
+        cache.put(key, p);
+        return p;
+    }
+
+    private double optimisticRemainingGain(int carry, int stepsLeft, int remainingTiles, int remainingHoles) {
+        if (stepsLeft <= 0) {
+            return 0.0;
+        }
+        int maxFills = Math.min(remainingHoles, Math.min(stepsLeft, carry + remainingTiles));
+        int leftoverSteps = Math.max(0, stepsLeft - maxFills);
+        int maxPickups = Math.min(remainingTiles, leftoverSteps);
+        return (maxFills * PLAN_FILL_UTILITY) + (maxPickups * PLAN_PICKUP_UTILITY);
     }
 
     private List<MemorySideCardEntry> recallPlanningPool(MemoryObjectType type, int limit, long step) {
@@ -1353,6 +1399,13 @@ public class AgentHanny extends Group7AgentBase {
 
     private long currentStep() {
         return this.getEnvironment().schedule.getSteps();
+    }
+
+    private void logRuntime(String text) {
+        if (!ENABLE_RUNTIME_LOG) {
+            return;
+        }
+        runtimeLogger.log(text);
     }
 
     private static String buildRuntimeLogPath(String agentName) {
