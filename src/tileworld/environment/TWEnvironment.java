@@ -11,12 +11,13 @@ import sim.engine.Steppable;
 import sim.field.grid.ObjectGrid2D;
 import sim.util.Bag;
 import sim.util.Int2D;
-import sun.font.TrueTypeFont;
+
 import tileworld.Parameters;
 import tileworld.TWGUI;
 import tileworld.agent.Message;
 import tileworld.agent.AgentEnge;
 import tileworld.agent.AgentHanny;
+import tileworld.agent.AgentDeng;
 import tileworld.agent.SimpleTWAgent;
 import tileworld.agent.TWAgent;
 
@@ -111,26 +112,31 @@ public class TWEnvironment extends SimState implements Steppable {
         
         //Now we create some agents（演示时每人可换成自己的 AgentXxx；联调时再组合各人实现）
         Int2D pos = this.generateRandomLocation();
-        createAgent(new AgentEnge("AgentEnge - Agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        // createAgent(new MyAgent("MyAgent - Agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentHanny("MyAgent - Agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
-        pos = this.generateRandomLocation();
-        createAgent(new AgentEnge("AgentEnge - Agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        pos = this.generateRandomLocation(); // random spawn point each time lah
+        createAgent(new AgentHanny("Hanny - Agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
+        // Agent3 — AgentDeng
         pos = this.generateRandomLocation();
-        createAgent(new AgentEnge("AgentEnge - Agent3", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentDeng("Deng - Agent3", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
+        // Please Change to your agent!
         pos = this.generateRandomLocation();
-        createAgent(new AgentHanny("AgentHanny - Agent4", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentHanny("Anonymous - Agent4", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
+        // Please Change to your agent!
         pos = this.generateRandomLocation();
-        createAgent(new AgentHanny("AgentHanny - Agent5", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentHanny("Anonymous - Agent5", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
+        // Please Change to your agent!
         pos = this.generateRandomLocation();
-        createAgent(new AgentHanny("AgentHanny - Agent6", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentHanny("Anonymous - Agent6", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         // pos = this.generateRandomLocation(); // example of adding agent
         // createAgent(new SimpleTWAgent("agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
-        
+
         //create the fueling station
         pos = this.generateRandomLocation();
         fuelingStation = new TWFuelStation(pos.getX(), pos.getY(),this);
