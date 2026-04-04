@@ -15,7 +15,7 @@ import sim.util.Int2D;
 import tileworld.Parameters;
 import tileworld.TWGUI;
 import tileworld.agent.Message;
-import tileworld.agent.MyAgent;
+import tileworld.agent.AgentEnge;
 import tileworld.agent.AgentHanny;
 import tileworld.agent.AgentDeng;
 import tileworld.agent.SimpleTWAgent;
@@ -110,7 +110,7 @@ public class TWEnvironment extends SimState implements Steppable {
 
         schedule.scheduleRepeating(this, 1, 1.0);
         
-        //Now we create some agents
+        //Now we create some agents（演示时每人可换成自己的 AgentXxx；联调时再组合各人实现）
         Int2D pos = this.generateRandomLocation();
         // createAgent(new MyAgent("MyAgent - Agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
         createAgent(new AgentHanny("MyAgent - Agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
