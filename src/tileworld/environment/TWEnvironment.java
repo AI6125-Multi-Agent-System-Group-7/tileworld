@@ -15,16 +15,15 @@ import sim.util.Int2D;
 import tileworld.Parameters;
 import tileworld.TWGUI;
 import tileworld.agent.Message;
-import tileworld.agent.MyAgent;
-import tileworld.agent.SmartAgent;
 import tileworld.Parameters;
 import tileworld.TWGUI;
 import tileworld.agent.Message;
 import tileworld.agent.AgentEnge;
 import tileworld.agent.AgentHanny;
+import tileworld.agent.SmartAgent;
 import tileworld.agent.AgentSun;
 import tileworld.agent.AgentDeng;
-import tileworld.agent.SimpleTWAgent;
+import tileworld.agent.AgentWu;
 import tileworld.agent.TWAgent;
 
 /**
@@ -118,28 +117,26 @@ public class TWEnvironment extends SimState implements Steppable {
         
         //Now we create some agents（演示时每人可换成自己的 AgentXxx；联调时再组合各人实现）
         Int2D pos = this.generateRandomLocation();
-        //createAgent(new MyAgent("agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
-
         createAgent(new SmartAgent(pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentSun("Sun1 - Agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentSun("Sun - Agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        //createAgent(new AgentHanny("Anonymous - Agent3", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentHanny("Hanny - Agent3", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        //createAgent(new AgentHanny("Anonymous - Agent4", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentWu("Wu - Agent4", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        //createAgent(new AgentHanny("Anonymous - Agent5", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentEnge("Enge - Agent5", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        //createAgent(new AgentHanny("Anonymous - Agent6", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentDeng("Deng - Agent6", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         // pos = this.generateRandomLocation(); // example of adding agent
         // createAgent(new SimpleTWAgent("agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
@@ -147,8 +144,6 @@ public class TWEnvironment extends SimState implements Steppable {
         //create the fueling station
         pos = this.generateRandomLocation();
         fuelingStation = new TWFuelStation(pos.getX(), pos.getY(),this);
-
-
 
     }
 

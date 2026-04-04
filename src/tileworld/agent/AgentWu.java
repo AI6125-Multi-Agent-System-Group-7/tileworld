@@ -23,7 +23,7 @@ import tileworld.agent.utils.SensorSnapshotCodec;
  * - Target lock module for multi-agent coordination
  * - Message processing with MemorySideCard for shared memory
  */
-public class MyCustomAgent extends Group7AgentBase {
+public class AgentWu extends Group7AgentBase {
 
     // ===================== 配置常量 =====================
     private static final int FUEL_MARGIN = 20;
@@ -61,7 +61,7 @@ public class MyCustomAgent extends Group7AgentBase {
     private Int2D currentCoopTarget;
 
     // ===================== 构造方法 =====================
-    public MyCustomAgent(String name, int xpos, int ypos, TWEnvironment env, double fuelLevel) {
+    public AgentWu(String name, int xpos, int ypos, TWEnvironment env, double fuelLevel) {
         super(name, xpos, ypos, env, fuelLevel);
         this.sideCard = new MemorySideCard();
         this.teammateTargetLeases = new HashMap<>();
