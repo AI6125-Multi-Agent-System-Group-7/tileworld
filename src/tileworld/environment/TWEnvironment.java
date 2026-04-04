@@ -11,6 +11,12 @@ import sim.engine.Steppable;
 import sim.field.grid.ObjectGrid2D;
 import sim.util.Bag;
 import sim.util.Int2D;
+//import sun.font.TrueTypeFont;
+import tileworld.Parameters;
+import tileworld.TWGUI;
+import tileworld.agent.Message;
+import tileworld.agent.MyAgent;
+import tileworld.agent.SmartAgent;
 import tileworld.Parameters;
 import tileworld.TWGUI;
 import tileworld.agent.Message;
@@ -112,27 +118,28 @@ public class TWEnvironment extends SimState implements Steppable {
         
         //Now we create some agents（演示时每人可换成自己的 AgentXxx；联调时再组合各人实现）
         Int2D pos = this.generateRandomLocation();
-        // createAgent(new MyAgent("MyAgent - Agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
-        createAgent(new AgentHanny("Hanny - Agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        //createAgent(new MyAgent("agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+
+        createAgent(new SmartAgent(pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         pos = this.generateRandomLocation(); // random spawn point each time lah
         createAgent(new AgentSun("Sun1 - Agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentSun("Sun2 - Agent3", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        //createAgent(new AgentHanny("Anonymous - Agent3", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentSun("Sun3 - Agent4", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        //createAgent(new AgentHanny("Anonymous - Agent4", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentSun("Sun4 - Agent5", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        //createAgent(new AgentHanny("Anonymous - Agent5", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentSun("Sun5 - Agent6", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        //createAgent(new AgentHanny("Anonymous - Agent6", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         // pos = this.generateRandomLocation(); // example of adding agent
         // createAgent(new SimpleTWAgent("agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
