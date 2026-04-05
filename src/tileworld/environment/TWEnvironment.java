@@ -67,6 +67,7 @@ public class TWEnvironment extends SimState implements Steppable {
     private TWFuelStation fuelingStation;
     
     private ArrayList<Message> messages; // the communication channel
+    private boolean messageBlackholeEnabled;
     
     private int reward;
 
@@ -99,6 +100,7 @@ public class TWEnvironment extends SimState implements Steppable {
         obstacles = new Bag();
         reward = 0;
         messages = new ArrayList<Message>();
+        messageBlackholeEnabled = Parameters.messageBlackholeEnabled;
     }
     
     @Override
@@ -207,7 +209,25 @@ public class TWEnvironment extends SimState implements Steppable {
     }
     
     public void receiveMessage(Message m){
+    	if (messageBlackholeEnabled) {
+    		return;
+    	}
     	messages.add(m);
+    }
+
+    /**
+     * Ablation helper: when enabled, all incoming messages are dropped.
+     * Existing queued messages are cleared immediately.
+     */
+    public void setMessageBlackholeEnabled(boolean enabled) {
+    	this.messageBlackholeEnabled = enabled;
+    	if (enabled) {
+    		messages.clear();
+    	}
+    }
+
+    public boolean isMessageBlackholeEnabled() {
+    	return messageBlackholeEnabled;
     }
     
     /**

@@ -15,6 +15,9 @@ package tileworld;
  *
  */
 public class Parameters {
+    // Ablation switch: when true, environment drops all inter-agent messages.
+    // Default false to keep normal communication behavior.
+    public static final boolean messageBlackholeEnabled = false;
 
     //Simulation Parameters 1 ===================================================
     public final static int seed = 4162012; //no effect with gui
