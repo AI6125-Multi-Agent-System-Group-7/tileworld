@@ -66,6 +66,12 @@ public class AgentHanny extends Group7AgentBase {
     private static final double PLAN_FILL_UTILITY = 1.00;
     private static final double PLAN_DISTANCE_COST = 0.07;
     private static final double PLAN_FUEL_PENALTY = 10.0;
+    private static final int EXPLORE_GRID_SPLIT = 3;
+    private static final long TEAMMATE_POSITION_TTL = 6L;
+    private static final int EXPLORE_SECTOR_SWITCH_COOLDOWN = 4;
+    private static final double EXPLORE_TEAMMATE_PENALTY = 1.80;
+    private static final double EXPLORE_COVERAGE_PENALTY = 1.20;
+    private static final double EXPLORE_DISTANCE_PENALTY = 0.03;
     private static final boolean ENABLE_STEP_LOG = false;
     private static final boolean ENABLE_RUNTIME_LOG = false;
     private static final int LOCK_TTL_MIN_STEPS = 8;
@@ -83,6 +89,7 @@ public class AgentHanny extends Group7AgentBase {
     private final Map<String, Long> selfEmptyObservedStep;
     private final Map<String, Long> teammateEmptyObservedStep;
     private final Map<String, TargetLease> teammateTargetLeases;
+    private final Map<String, TeammatePosition> teammatePositions;
     private final int ownTargetLockTtlSteps;
 
     // Owned target lock (renewed shortly before expiry).
@@ -98,6 +105,18 @@ public class AgentHanny extends Group7AgentBase {
     private int zoneSweepX;
     private int zoneSweepY;
     private boolean zoneSweepRight;
+
+    // Adaptive exploration over 3x3 sectors.
+    private final SectorRect[] exploreSectors;
+    private final boolean[][] exploredEver;
+    private final int[] exploredCellsPerSector;
+    private int currentExploreSectorId;
+    private long lastExploreSectorSwitchStep;
+    private String exploreSweepKey;
+    private Int2D exploreSweepTarget;
+    private int exploreSweepX;
+    private int exploreSweepY;
+    private boolean exploreSweepRight;
 
     // Rolling plan selected by EU over multi-object sequences.
     private PlanCandidate activePlan;
@@ -119,6 +138,7 @@ public class AgentHanny extends Group7AgentBase {
         this.selfEmptyObservedStep = new HashMap<String, Long>();
         this.teammateEmptyObservedStep = new HashMap<String, Long>();
         this.teammateTargetLeases = new HashMap<String, TargetLease>();
+        this.teammatePositions = new HashMap<String, TeammatePosition>();
         this.ownTargetLockTtlSteps = computeDefaultTargetLockTtl(env);
         this.lockedTargetCell = null;
         this.lockedTargetType = null;
@@ -130,6 +150,16 @@ public class AgentHanny extends Group7AgentBase {
         this.zoneSweepX = 0;
         this.zoneSweepY = 0;
         this.zoneSweepRight = true;
+        this.exploreSectors = buildExploreSectors(env.getxDimension(), env.getyDimension());
+        this.exploredEver = new boolean[env.getxDimension()][env.getyDimension()];
+        this.exploredCellsPerSector = new int[EXPLORE_GRID_SPLIT * EXPLORE_GRID_SPLIT];
+        this.currentExploreSectorId = -1;
+        this.lastExploreSectorSwitchStep = Long.MIN_VALUE / 4;
+        this.exploreSweepKey = null;
+        this.exploreSweepTarget = null;
+        this.exploreSweepX = 0;
+        this.exploreSweepY = 0;
+        this.exploreSweepRight = true;
         this.activePlan = null;
         this.activePlanIndex = 0;
 
@@ -171,6 +201,7 @@ public class AgentHanny extends Group7AgentBase {
         processIncomingMessages(step);
         processZoneCoordinationInThink();
         pruneStaleTeammateTargetLeases(step);
+        pruneStaleTeammatePositions(step);
         ensureActiveLockStillValid(step);
         synchronizeSideCardWithCurrentObservation(step);
         applyAggregatedHazardUpdates(step);
@@ -282,7 +313,7 @@ public class AgentHanny extends Group7AgentBase {
     }
 
     private TWThought explore() {
-        return exploreZigZag();
+        return exploreAdaptiveNineGrid(currentStep());
     }
 
     private TWThought bootstrapZoneSearch(long step) {
@@ -367,6 +398,229 @@ public class AgentHanny extends Group7AgentBase {
         return new Int2D(zoneSweepX, zoneSweepY);
     }
 
+    private TWThought exploreAdaptiveNineGrid(long step) {
+        if (exploreSectors.length == 0) {
+            return exploreZigZag();
+        }
+
+        int bestSector = chooseExploreSector(step);
+        if (bestSector < 0) {
+            return exploreZigZag();
+        }
+
+        if (currentExploreSectorId < 0) {
+            setCurrentExploreSector(bestSector, step);
+        } else if (bestSector != currentExploreSectorId) {
+            long elapsed = step - lastExploreSectorSwitchStep;
+            double currentCoverage = sectorCoverage(currentExploreSectorId);
+            if (elapsed >= EXPLORE_SECTOR_SWITCH_COOLDOWN || currentCoverage >= 0.92) {
+                setCurrentExploreSector(bestSector, step);
+            }
+        }
+
+        SectorRect sector = exploreSectors[currentExploreSectorId];
+        resetExploreSweepIfNeeded(sector);
+
+        if (!sector.contains(this.getX(), this.getY())) {
+            clearPlan();
+            return stepToward(sector.center());
+        }
+
+        for (int attempts = 0; attempts < 6; attempts++) {
+            if (exploreSweepTarget == null || atPosition(exploreSweepTarget)) {
+                exploreSweepTarget = nextExploreSweepTarget(sector);
+            }
+
+            TWThought thought = stepToward(exploreSweepTarget);
+            if (!isWaitThought(thought)) {
+                return thought;
+            }
+
+            exploreSweepTarget = nextExploreSweepTarget(sector);
+            clearPlan();
+        }
+
+        return waitThought();
+    }
+
+    private void setCurrentExploreSector(int sectorId, long step) {
+        currentExploreSectorId = sectorId;
+        lastExploreSectorSwitchStep = step;
+        exploreSweepKey = null;
+        exploreSweepTarget = null;
+    }
+
+    private int chooseExploreSector(long step) {
+        int bestId = -1;
+        double bestScore = -Double.MAX_VALUE;
+
+        for (int i = 0; i < exploreSectors.length; i++) {
+            SectorRect sector = exploreSectors[i];
+            if (sector.area() <= 0) {
+                continue;
+            }
+
+            int teammates = teammateCountInSector(sector, step);
+            double coverage = sectorCoverage(i);
+            Int2D center = sector.center();
+            int dist = manhattan(this.getX(), this.getY(), center.x, center.y);
+
+            double score = 0.0;
+            score -= EXPLORE_TEAMMATE_PENALTY * teammates;
+            score -= EXPLORE_COVERAGE_PENALTY * coverage;
+            score -= EXPLORE_DISTANCE_PENALTY * dist;
+
+            if (score > bestScore) {
+                bestScore = score;
+                bestId = i;
+            }
+        }
+
+        return bestId;
+    }
+
+    private int teammateCountInSector(SectorRect sector, long step) {
+        int count = 0;
+        for (TeammatePosition pos : teammatePositions.values()) {
+            if ((step - pos.step) > TEAMMATE_POSITION_TTL) {
+                continue;
+            }
+            if (sector.contains(pos.x, pos.y)) {
+                count += 1;
+            }
+        }
+        return count;
+    }
+
+    private double sectorCoverage(int sectorId) {
+        if (sectorId < 0 || sectorId >= exploreSectors.length) {
+            return 1.0;
+        }
+        SectorRect sector = exploreSectors[sectorId];
+        int area = sector.area();
+        if (area <= 0) {
+            return 1.0;
+        }
+        return exploredCellsPerSector[sectorId] / (double) area;
+    }
+
+    private void resetExploreSweepIfNeeded(SectorRect sector) {
+        String key = sector.id + ":" + sector.x1 + ":" + sector.y1 + ":" + sector.x2 + ":" + sector.y2;
+        if (key.equals(exploreSweepKey)) {
+            return;
+        }
+
+        exploreSweepKey = key;
+        exploreSweepTarget = null;
+        exploreSweepX = sector.x1;
+        exploreSweepY = sector.y1;
+        exploreSweepRight = true;
+    }
+
+    private Int2D nextExploreSweepTarget(SectorRect sector) {
+        int stride = Math.max(1, (Parameters.defaultSensorRange * 2) + 1);
+
+        if (exploreSweepRight) {
+            int nextX = exploreSweepX + stride;
+            if (nextX <= sector.x2) {
+                exploreSweepX = nextX;
+            } else {
+                exploreSweepX = sector.x2;
+                exploreSweepY += stride;
+                exploreSweepRight = false;
+            }
+        } else {
+            int nextX = exploreSweepX - stride;
+            if (nextX >= sector.x1) {
+                exploreSweepX = nextX;
+            } else {
+                exploreSweepX = sector.x1;
+                exploreSweepY += stride;
+                exploreSweepRight = true;
+            }
+        }
+
+        if (exploreSweepY > sector.y2) {
+            exploreSweepY = sector.y1;
+        }
+
+        return new Int2D(exploreSweepX, exploreSweepY);
+    }
+
+    private void updateTeammatePosition(String name, int x, int y, long step) {
+        if (name == null || name.equals(this.getName())) {
+            return;
+        }
+        teammatePositions.put(name, new TeammatePosition(x, y, step));
+    }
+
+    private void pruneStaleTeammatePositions(long step) {
+        List<String> stale = new ArrayList<String>();
+        for (Map.Entry<String, TeammatePosition> entry : teammatePositions.entrySet()) {
+            if ((step - entry.getValue().step) > TEAMMATE_POSITION_TTL) {
+                stale.add(entry.getKey());
+            }
+        }
+        for (String key : stale) {
+            teammatePositions.remove(key);
+        }
+    }
+
+    private void markCellExplored(int x, int y) {
+        if (!this.getEnvironment().isInBounds(x, y)) {
+            return;
+        }
+        if (exploredEver[x][y]) {
+            return;
+        }
+
+        exploredEver[x][y] = true;
+        int sectorId = sectorIdForCell(x, y);
+        if (sectorId >= 0 && sectorId < exploredCellsPerSector.length) {
+            exploredCellsPerSector[sectorId] += 1;
+        }
+    }
+
+    private int sectorIdForCell(int x, int y) {
+        for (SectorRect sector : exploreSectors) {
+            if (sector.contains(x, y)) {
+                return sector.id;
+            }
+        }
+        return -1;
+    }
+
+    private SectorRect[] buildExploreSectors(int xDim, int yDim) {
+        int[] xSizes = splitSizes(xDim, EXPLORE_GRID_SPLIT);
+        int[] ySizes = splitSizes(yDim, EXPLORE_GRID_SPLIT);
+
+        List<SectorRect> sectors = new ArrayList<SectorRect>(EXPLORE_GRID_SPLIT * EXPLORE_GRID_SPLIT);
+        int yStart = 0;
+        int id = 0;
+        for (int row = 0; row < EXPLORE_GRID_SPLIT; row++) {
+            int yEnd = yStart + ySizes[row] - 1;
+            int xStart = 0;
+            for (int col = 0; col < EXPLORE_GRID_SPLIT; col++) {
+                int xEnd = xStart + xSizes[col] - 1;
+                sectors.add(new SectorRect(id, xStart, yStart, xEnd, yEnd));
+                xStart = xEnd + 1;
+                id += 1;
+            }
+            yStart = yEnd + 1;
+        }
+        return sectors.toArray(new SectorRect[sectors.size()]);
+    }
+
+    private int[] splitSizes(int total, int parts) {
+        int[] sizes = new int[parts];
+        int base = total / parts;
+        int rem = total % parts;
+        for (int i = 0; i < parts; i++) {
+            sizes[i] = base + ((i < rem) ? 1 : 0);
+        }
+        return sizes;
+    }
+
     private boolean isWaitThought(TWThought thought) {
         return thought != null
                 && thought.getAction() == TWAction.MOVE
@@ -425,6 +679,7 @@ public class AgentHanny extends Group7AgentBase {
                     rememberFuelStationFromMessage(parsed.x, parsed.y);
                     break;
                 case OBS_SENSOR_SNAPSHOT:
+                    updateTeammatePosition(parsed.from, parsed.x, parsed.y, parsed.step);
                     processSnapshotMessage(parsed);
                     break;
                 case TARGET_LOCK:
@@ -728,6 +983,7 @@ public class AgentHanny extends Group7AgentBase {
                 if (!this.getEnvironment().isInBounds(x, y)) {
                     continue;
                 }
+                markCellExplored(x, y);
 
                 TWEntity obj = (TWEntity) grid.get(x, y);
                 if (obj == null) {
@@ -1467,6 +1723,50 @@ public class AgentHanny extends Group7AgentBase {
             this.step = step;
             this.ttlSteps = Math.max(1, ttlSteps);
             this.expiresAtStep = this.step + this.ttlSteps;
+        }
+    }
+
+    private static class TeammatePosition {
+        private final int x;
+        private final int y;
+        private final long step;
+
+        private TeammatePosition(int x, int y, long step) {
+            this.x = x;
+            this.y = y;
+            this.step = step;
+        }
+    }
+
+    private static class SectorRect {
+        private final int id;
+        private final int x1;
+        private final int y1;
+        private final int x2;
+        private final int y2;
+
+        private SectorRect(int id, int x1, int y1, int x2, int y2) {
+            this.id = id;
+            this.x1 = x1;
+            this.y1 = y1;
+            this.x2 = x2;
+            this.y2 = y2;
+        }
+
+        private boolean contains(int x, int y) {
+            return x >= x1 && x <= x2 && y >= y1 && y <= y2;
+        }
+
+        private int area() {
+            int w = Math.max(0, x2 - x1 + 1);
+            int h = Math.max(0, y2 - y1 + 1);
+            return w * h;
+        }
+
+        private Int2D center() {
+            int cx = (x1 + x2) / 2;
+            int cy = (y1 + y2) / 2;
+            return new Int2D(cx, cy);
         }
     }
 
