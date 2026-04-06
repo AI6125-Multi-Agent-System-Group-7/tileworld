@@ -59,6 +59,15 @@ public class AgentHanny extends Group7AgentBase {
     private static final double HAZARD_MIN = 1e-3;
     private static final double HAZARD_MAX = 2.0;
     private static final double MAX_ABS_HAZARD_STEP = 0.05;
+    private static final int PLAN_TILE_RECALL_LIMIT = 7;
+    private static final int PLAN_HOLE_RECALL_LIMIT = 7;
+    private static final int PLAN_MAX_DEPTH = 6;
+    private static final double PLAN_PICKUP_UTILITY = 0.20;
+    private static final double PLAN_FILL_UTILITY = 1.00;
+    private static final double PLAN_DISTANCE_COST = 0.07;
+    private static final double PLAN_FUEL_PENALTY = 10.0;
+    private static final boolean ENABLE_STEP_LOG = false;
+    private static final boolean ENABLE_RUNTIME_LOG = false;
     private static final int LOCK_TTL_MIN_STEPS = 8;
     private static final int LOCK_TTL_MAX_STEPS = 20;
     private static final int LOCK_RENEW_BEFORE_STEPS = 2;
@@ -90,6 +99,10 @@ public class AgentHanny extends Group7AgentBase {
     private int zoneSweepY;
     private boolean zoneSweepRight;
 
+    // Rolling plan selected by EU over multi-object sequences.
+    private PlanCandidate activePlan;
+    private int activePlanIndex;
+
     // Online learned hazards (lambda) per object type.
     private double hazardTile;
     private double hazardHole;
@@ -117,6 +130,8 @@ public class AgentHanny extends Group7AgentBase {
         this.zoneSweepX = 0;
         this.zoneSweepY = 0;
         this.zoneSweepRight = true;
+        this.activePlan = null;
+        this.activePlanIndex = 0;
 
         this.hazardTile = 0.06;
         this.hazardHole = 0.06;
@@ -202,19 +217,25 @@ public class AgentHanny extends Group7AgentBase {
             return new TWThought(TWAction.PICKUP, TWDirection.Z);
         }
 
-        // If carrying tiles, choose a hazard-aware hole candidate.
-        if (this.hasTile()) {
-            MemorySideCardEntry hole = recallBestCandidate(MemoryObjectType.HOLE, step);
-            if (hole != null) {
-                return stepToward(new Int2D(hole.getX(), hole.getY()));
-            }
+        // Plan over multiple objects using expected utility (EU), then execute first step.
+        if (shouldReplan(step)) {
+            releaseOwnTargetLock("replan_before_new_plan");
+            activePlan = buildBestPlan(step);
+            activePlanIndex = 0;
         }
 
-        // If we can carry more, choose a hazard-aware tile candidate.
-        if (this.carriedTiles.size() < 3) {
-            MemorySideCardEntry tile = recallBestCandidate(MemoryObjectType.TILE, step);
-            if (tile != null) {
-                return stepToward(new Int2D(tile.getX(), tile.getY()));
+        PlanTarget current = getCurrentPlanTarget();
+        if (current != null) {
+            if (tryAcquireOrKeepTargetLock(current.type, current.x, current.y, step)) {
+                return stepToward(new Int2D(current.x, current.y));
+            }
+            // Could not lock current target due teammate contention, force re-plan.
+            clearActivePlan("lock_conflict_replan");
+            activePlan = buildBestPlan(step);
+            activePlanIndex = 0;
+            current = getCurrentPlanTarget();
+            if (current != null && tryAcquireOrKeepTargetLock(current.type, current.x, current.y, step)) {
+                return stepToward(new Int2D(current.x, current.y));
             }
         }
 
@@ -236,22 +257,26 @@ public class AgentHanny extends Group7AgentBase {
         int carriedBefore = this.carriedTiles.size();
         int scoreBefore = this.getScore();
 
-        System.out.println(String.format(
-                "[Hanny step %d] %s %s | pos=(%d,%d) fuel=%d score=%d",
-                stepCount,
-                action,
-                dir,
-                this.getX(),
-                this.getY(),
-                (int) this.getFuelLevel(),
-                this.getScore()));
+        if (ENABLE_STEP_LOG) {
+            System.out.println(String.format(
+                    "[Hanny step %d] %s %s | pos=(%d,%d) fuel=%d score=%d",
+                    stepCount,
+                    action,
+                    dir,
+                    this.getX(),
+                    this.getY(),
+                    (int) this.getFuelLevel(),
+                    this.getScore()));
+        }
         super.act(thought);
 
         // Keep sidecard and working memory in sync with own successful actions.
         if (thought != null && thought.getAction() == TWAction.PICKUP && this.carriedTiles.size() > carriedBefore) {
+            advancePlanAfterAction(MemoryObjectType.TILE, actionX, actionY);
             removeRecordAndSync(MemoryObjectType.TILE, actionX, actionY);
         }
         if (thought != null && thought.getAction() == TWAction.PUTDOWN && this.getScore() > scoreBefore) {
+            advancePlanAfterAction(MemoryObjectType.HOLE, actionX, actionY);
             removeRecordAndSync(MemoryObjectType.HOLE, actionX, actionY);
         }
     }
@@ -352,9 +377,28 @@ public class AgentHanny extends Group7AgentBase {
         return target != null && this.getX() == target.x && this.getY() == target.y;
     }
 
+    @Override
+    protected void clearPlan() {
+        super.clearPlan();
+        releaseOwnTargetLock("clear_plan");
+        clearActivePlan("clear_plan");
+    }
+
     private void processIncomingMessages(long step) {
         List<Message> inbox = new ArrayList<Message>(this.getEnvironment().getMessages());
         for (Message message : inbox) {
+            if (message == null) {
+                continue;
+            }
+            String directFrom = message.getFrom();
+            if (directFrom != null && directFrom.equals(this.getName())) {
+                continue;
+            }
+            String directTo = message.getTo();
+            if (directTo != null && !directTo.equals("ALL") && !directTo.equals(this.getName())) {
+                continue;
+            }
+
             ParsedMessage parsed = parseProtocolMessage(message);
             if (parsed == null) {
                 continue;
@@ -505,6 +549,21 @@ public class AgentHanny extends Group7AgentBase {
         if (!sideCard.contains(lockedTargetType, lockedTargetCell.x, lockedTargetCell.y)) {
             releaseOwnTargetLock("target_not_in_sidecard");
         }
+    }
+
+    private boolean tryAcquireOrKeepTargetLock(MemoryObjectType type, int x, int y, long step) {
+        if (type == null) {
+            return false;
+        }
+        if (isOwnLockAt(type, x, y)) {
+            return true;
+        }
+
+        MemorySideCardEntry entry = sideCard.get(type, x, y);
+        if (entry == null) {
+            return false;
+        }
+        return tryAcquireOrKeepTargetLock(entry, step);
     }
 
     private boolean tryAcquireOrKeepTargetLock(MemorySideCardEntry entry, long step) {
@@ -821,7 +880,7 @@ public class AgentHanny extends Group7AgentBase {
             double newHazard = HazardLearningUtils.clip(oldHazard + netStep, HAZARD_MIN, HAZARD_MAX);
             setHazard(type, newHazard);
 
-            runtimeLogger.log(String.format(
+            logRuntime(String.format(
                     "step=%d mode=aggregated type=%s matched_count=%d mismatch_count=%d matched_sum=%.6f mismatch_sum=%.6f eta_match=%.6f eta_mismatch=%.6f hazard_old=%.6f hazard_new=%.6f",
                     step,
                     type.name(),
@@ -856,64 +915,323 @@ public class AgentHanny extends Group7AgentBase {
         return base * multiplier;
     }
 
-    private MemorySideCardEntry recallBestCandidate(MemoryObjectType type, long step) {
-        List<MemorySideCardEntry> pool = sideCard.listByType(type);
-        if (pool.isEmpty()) {
+    private boolean shouldReplan(long step) {
+        PlanTarget current = getCurrentPlanTarget();
+        if (current == null) {
+            return true;
+        }
+        if (current.type == MemoryObjectType.TILE && this.carriedTiles.size() >= 3) {
+            return true;
+        }
+        if (current.type == MemoryObjectType.HOLE && !this.hasTile()) {
+            return true;
+        }
+        return !isPlanTargetStillValid(current, step);
+    }
+
+    private boolean isPlanTargetStillValid(PlanTarget target, long step) {
+        if (target == null) {
+            return false;
+        }
+
+        MemorySideCardEntry entry = sideCard.get(target.type, target.x, target.y);
+        if (entry == null) {
+            return false;
+        }
+        if (shouldLazyDelete(entry, step)) {
+            return false;
+        }
+        if (isCellLockedByTeammate(target.x, target.y)) {
+            return false;
+        }
+        return true;
+    }
+
+    private PlanTarget getCurrentPlanTarget() {
+        if (activePlan == null) {
+            return null;
+        }
+        if (activePlanIndex < 0 || activePlanIndex >= activePlan.targets.size()) {
+            return null;
+        }
+        return activePlan.targets.get(activePlanIndex);
+    }
+
+    private void clearActivePlan(String reason) {
+        if (activePlan != null) {
+            logRuntime(String.format(
+                    "step=%d mode=plan_clear reason=%s eu=%.6f",
+                    currentStep(),
+                    reason,
+                    activePlan.eu));
+        }
+        activePlan = null;
+        activePlanIndex = 0;
+    }
+
+    private void advancePlanAfterAction(MemoryObjectType type, int x, int y) {
+        PlanTarget current = getCurrentPlanTarget();
+        if (current == null) {
+            return;
+        }
+        if (current.type == type && current.x == x && current.y == y) {
+            activePlanIndex += 1;
+            if (activePlan != null && activePlanIndex >= activePlan.targets.size()) {
+                clearActivePlan("plan_finished");
+            }
+        }
+    }
+
+    private boolean isTargetInActivePlan(MemoryObjectType type, int x, int y) {
+        if (activePlan == null) {
+            return false;
+        }
+        for (int i = Math.max(0, activePlanIndex); i < activePlan.targets.size(); i++) {
+            PlanTarget t = activePlan.targets.get(i);
+            if (t.type == type && t.x == x && t.y == y) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private PlanCandidate buildBestPlan(long step) {
+        List<MemorySideCardEntry> tilePool = recallPlanningPool(MemoryObjectType.TILE, PLAN_TILE_RECALL_LIMIT, step);
+        List<MemorySideCardEntry> holePool = recallPlanningPool(MemoryObjectType.HOLE, PLAN_HOLE_RECALL_LIMIT, step);
+        if (tilePool.isEmpty() && holePool.isEmpty()) {
             return null;
         }
 
-        Collections.sort(pool, new Comparator<MemorySideCardEntry>() {
-            @Override
-            public int compare(MemorySideCardEntry a, MemorySideCardEntry b) {
-                int da = Math.abs(a.getX() - getX()) + Math.abs(a.getY() - getY());
-                int db = Math.abs(b.getX() - getX()) + Math.abs(b.getY() - getY());
-                return Integer.compare(da, db);
+        PlanBestHolder best = new PlanBestHolder();
+        List<PlanTarget> sequence = new ArrayList<PlanTarget>();
+        Map<String, Double> aliveProbCache = new HashMap<String, Double>();
+
+        enumeratePlans(
+                step,
+                this.getX(),
+                this.getY(),
+                this.carriedTiles.size(),
+                0,
+                0.0,
+                sequence,
+                tilePool,
+                holePool,
+                0,
+                0,
+                aliveProbCache,
+                best);
+
+        if (best.best != null) {
+            logRuntime(String.format(
+                    "step=%d mode=plan_select len=%d eu=%.6f dist=%d",
+                    step,
+                    best.best.targets.size(),
+                    best.best.eu,
+                    best.best.totalDistance));
+        }
+        return best.best;
+    }
+
+    private void enumeratePlans(
+            long nowStep,
+            int posX,
+            int posY,
+            int carry,
+            int totalDistance,
+            double euBase,
+            List<PlanTarget> sequence,
+            List<MemorySideCardEntry> tilePool,
+            List<MemorySideCardEntry> holePool,
+            int usedTileMask,
+            int usedHoleMask,
+            Map<String, Double> aliveProbCache,
+            PlanBestHolder best) {
+
+        if (!sequence.isEmpty()) {
+            double eu = euBase - fuelPenalty(totalDistance);
+            PlanCandidate candidate = new PlanCandidate(new ArrayList<PlanTarget>(sequence), eu, totalDistance);
+            if (isBetterPlan(candidate, best.best)) {
+                best.best = candidate;
             }
-        });
+        }
 
-        int coarseLimit = Math.min(pool.size(), RECALL_TOP_K + RECALL_BUFFER);
-        List<CandidateScore> candidates = new ArrayList<CandidateScore>(coarseLimit);
+        if (sequence.size() >= PLAN_MAX_DEPTH) {
+            return;
+        }
 
-        for (int i = 0; i < coarseLimit; i++) {
-            MemorySideCardEntry entry = pool.get(i);
+        if (best.best != null) {
+            int stepsLeft = PLAN_MAX_DEPTH - sequence.size();
+            int remainingTiles = tilePool.size() - Integer.bitCount(usedTileMask);
+            int remainingHoles = holePool.size() - Integer.bitCount(usedHoleMask);
+            double optimisticUpper = euBase
+                    - fuelPenalty(totalDistance)
+                    + optimisticRemainingGain(carry, stepsLeft, remainingTiles, remainingHoles);
+            if (optimisticUpper <= best.best.eu) {
+                return;
+            }
+        }
 
+        if (carry < 3) {
+            for (int i = 0; i < tilePool.size(); i++) {
+                int bit = 1 << i;
+                if ((usedTileMask & bit) != 0) {
+                    continue;
+                }
+                MemorySideCardEntry tile = tilePool.get(i);
+                int d = manhattan(posX, posY, tile.getX(), tile.getY());
+                int arrival = (int) (nowStep + totalDistance + d);
+                double pAlive = aliveProbabilityAt(tile, arrival, aliveProbCache);
+                double deltaEu = (PLAN_PICKUP_UTILITY * pAlive) - (PLAN_DISTANCE_COST * d);
+
+                sequence.add(new PlanTarget(tile.getType(), tile.getX(), tile.getY()));
+
+                enumeratePlans(
+                        nowStep,
+                        tile.getX(),
+                        tile.getY(),
+                        carry + 1,
+                        totalDistance + d,
+                        euBase + deltaEu,
+                        sequence,
+                        tilePool,
+                        holePool,
+                        usedTileMask | bit,
+                        usedHoleMask,
+                        aliveProbCache,
+                        best);
+
+                sequence.remove(sequence.size() - 1);
+            }
+        }
+
+        if (carry > 0) {
+            for (int i = 0; i < holePool.size(); i++) {
+                int bit = 1 << i;
+                if ((usedHoleMask & bit) != 0) {
+                    continue;
+                }
+                MemorySideCardEntry hole = holePool.get(i);
+                int d = manhattan(posX, posY, hole.getX(), hole.getY());
+                int arrival = (int) (nowStep + totalDistance + d);
+                double pAlive = aliveProbabilityAt(hole, arrival, aliveProbCache);
+                double deltaEu = (PLAN_FILL_UTILITY * pAlive) - (PLAN_DISTANCE_COST * d);
+
+                sequence.add(new PlanTarget(hole.getType(), hole.getX(), hole.getY()));
+
+                enumeratePlans(
+                        nowStep,
+                        hole.getX(),
+                        hole.getY(),
+                        carry - 1,
+                        totalDistance + d,
+                        euBase + deltaEu,
+                        sequence,
+                        tilePool,
+                        holePool,
+                        usedTileMask,
+                        usedHoleMask | bit,
+                        aliveProbCache,
+                        best);
+
+                sequence.remove(sequence.size() - 1);
+            }
+        }
+    }
+
+    private double aliveProbabilityAt(MemorySideCardEntry entry, int arrival, Map<String, Double> cache) {
+        String key = entry.key() + "@" + arrival;
+        Double cached = cache.get(key);
+        if (cached != null) {
+            return cached.doubleValue();
+        }
+        double p = HazardLearningUtils.computeAliveProbability(
+                entry,
+                arrival,
+                getHazard(entry.getType()),
+                EPSILON);
+        cache.put(key, p);
+        return p;
+    }
+
+    private double optimisticRemainingGain(int carry, int stepsLeft, int remainingTiles, int remainingHoles) {
+        if (stepsLeft <= 0) {
+            return 0.0;
+        }
+        int maxFills = Math.min(remainingHoles, Math.min(stepsLeft, carry + remainingTiles));
+        int leftoverSteps = Math.max(0, stepsLeft - maxFills);
+        int maxPickups = Math.min(remainingTiles, leftoverSteps);
+        return (maxFills * PLAN_FILL_UTILITY) + (maxPickups * PLAN_PICKUP_UTILITY);
+    }
+
+    private List<MemorySideCardEntry> recallPlanningPool(MemoryObjectType type, int limit, long step) {
+        List<MemorySideCardEntry> pool = sideCard.listByType(type);
+        if (pool.isEmpty()) {
+            return new ArrayList<MemorySideCardEntry>();
+        }
+
+        List<MemorySideCardEntry> filtered = new ArrayList<MemorySideCardEntry>();
+        for (MemorySideCardEntry entry : pool) {
             if (shouldLazyDelete(entry, step)) {
                 removeRecordAndSync(entry.getType(), entry.getX(), entry.getY());
                 continue;
             }
-
-            int dist = Math.abs(entry.getX() - this.getX()) + Math.abs(entry.getY() - this.getY());
-            double pAlive = HazardLearningUtils.computeAliveProbability(
-                    entry,
-                    step,
-                    getHazard(entry.getType()),
-                    EPSILON);
-            double score = pAlive / (dist + 1.0);
-            candidates.add(new CandidateScore(entry, score, dist));
+            if (isCellLockedByTeammate(entry.getX(), entry.getY())) {
+                continue;
+            }
+            filtered.add(entry);
         }
 
-        if (candidates.isEmpty()) {
-            return null;
-        }
-
-        Collections.sort(candidates, new Comparator<CandidateScore>() {
+        Collections.sort(filtered, new Comparator<MemorySideCardEntry>() {
             @Override
-            public int compare(CandidateScore a, CandidateScore b) {
-                int scoreCmp = Double.compare(b.score, a.score);
-                if (scoreCmp != 0) {
-                    return scoreCmp;
+            public int compare(MemorySideCardEntry a, MemorySideCardEntry b) {
+                int da = Math.abs(a.getX() - getX()) + Math.abs(a.getY() - getY());
+                int db = Math.abs(b.getX() - getX()) + Math.abs(b.getY() - getY());
+                if (da != db) {
+                    return Integer.compare(da, db);
                 }
-                return Integer.compare(a.distance, b.distance);
+                return Double.compare(
+                        HazardLearningUtils.computeAliveProbability(b, currentStep(), getHazard(b.getType()), EPSILON),
+                        HazardLearningUtils.computeAliveProbability(a, currentStep(), getHazard(a.getType()), EPSILON));
             }
         });
 
-        for (CandidateScore candidate : candidates) {
-            if (tryAcquireOrKeepTargetLock(candidate.entry, step)) {
-                return candidate.entry;
-            }
-        }
+        int realLimit = Math.min(limit, filtered.size());
+        return new ArrayList<MemorySideCardEntry>(filtered.subList(0, realLimit));
+    }
 
-        return null;
+    private boolean isCellLockedByTeammate(int x, int y) {
+        TargetLease teammate = teammateTargetLeases.get(MemorySideCard.cellKey(x, y));
+        return teammate != null;
+    }
+
+    private boolean isBetterPlan(PlanCandidate current, PlanCandidate best) {
+        if (current == null) {
+            return false;
+        }
+        if (best == null) {
+            return true;
+        }
+        int euCmp = Double.compare(current.eu, best.eu);
+        if (euCmp != 0) {
+            return euCmp > 0;
+        }
+        int lenCmp = Integer.compare(current.targets.size(), best.targets.size());
+        if (lenCmp != 0) {
+            return lenCmp > 0;
+        }
+        return current.totalDistance < best.totalDistance;
+    }
+
+    private int manhattan(int x1, int y1, int x2, int y2) {
+        return Math.abs(x1 - x2) + Math.abs(y1 - y2);
+    }
+
+    private double fuelPenalty(int travelDistance) {
+        double remainingFuel = this.getFuelLevel() - travelDistance;
+        if (remainingFuel >= FUEL_MARGIN) {
+            return 0.0;
+        }
+        return (FUEL_MARGIN - remainingFuel) * PLAN_FUEL_PENALTY;
     }
 
     private boolean shouldLazyDelete(MemorySideCardEntry entry, long step) {
@@ -962,6 +1280,10 @@ public class AgentHanny extends Group7AgentBase {
     }
 
     private void removeRecordAndSync(MemoryObjectType type, int x, int y) {
+        if (isTargetInActivePlan(type, x, y)) {
+            releaseOwnTargetLock("plan_invalidated_target_removed");
+            clearActivePlan("target_removed_from_plan");
+        }
         if (isOwnLockAt(type, x, y)) {
             releaseOwnTargetLock("target_removed");
         }
@@ -1079,6 +1401,13 @@ public class AgentHanny extends Group7AgentBase {
         return this.getEnvironment().schedule.getSteps();
     }
 
+    private void logRuntime(String text) {
+        if (!ENABLE_RUNTIME_LOG) {
+            return;
+        }
+        runtimeLogger.log(text);
+    }
+
     private static String buildRuntimeLogPath(String agentName) {
         String safeName = sanitizeFileName(agentName);
         return LOG_DIR + "/" + safeName + "-model-updates.log";
@@ -1097,16 +1426,32 @@ public class AgentHanny extends Group7AgentBase {
         return sanitized;
     }
 
-    private static class CandidateScore {
-        private final MemorySideCardEntry entry;
-        private final double score;
-        private final int distance;
+    private static class PlanTarget {
+        private final MemoryObjectType type;
+        private final int x;
+        private final int y;
 
-        private CandidateScore(MemorySideCardEntry entry, double score, int distance) {
-            this.entry = entry;
-            this.score = score;
-            this.distance = distance;
+        private PlanTarget(MemoryObjectType type, int x, int y) {
+            this.type = type;
+            this.x = x;
+            this.y = y;
         }
+    }
+
+    private static class PlanCandidate {
+        private final List<PlanTarget> targets;
+        private final double eu;
+        private final int totalDistance;
+
+        private PlanCandidate(List<PlanTarget> targets, double eu, int totalDistance) {
+            this.targets = targets;
+            this.eu = eu;
+            this.totalDistance = totalDistance;
+        }
+    }
+
+    private static class PlanBestHolder {
+        private PlanCandidate best;
     }
 
     private static class TargetLease {
