@@ -23,7 +23,7 @@ import tileworld.agent.AgentHanny;
 import tileworld.agent.SmartAgent;
 import tileworld.agent.AgentSun;
 import tileworld.agent.AgentDeng;
-import tileworld.agent.AgentWu;
+import tileworld.agent.AgentWuV2;
 import tileworld.agent.TWAgent;
 
 /**
@@ -130,7 +130,7 @@ public class TWEnvironment extends SimState implements Steppable {
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentWu("Wu - Agent4", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentWuV2("Wu - Agent4", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
