@@ -16,6 +16,7 @@ import tileworld.agent.classdefines.MemorySideCardEntry;
 public class SmartAgent extends Group7AgentBase {
 
     // 配置
+    // 配置
     private static final double FUEL_FORCE_REFuel = 150;   // 强制加油
     private static final double FUEL_WARNING = 200;       // 预警层
     private static final int RECENT_MAX = 10;
@@ -24,6 +25,7 @@ public class SmartAgent extends Group7AgentBase {
     private static final int ASTAR_MAX_NODES = 150;
     private static final int SAFETY_FUEL_BUFFER = 20;     // 往返安全余量
 
+    // 状态 
     // 状态 
     private final Deque<int[]> recentPositions = new ArrayDeque<>();
     private final Set<int[]> knownFuelStations = new HashSet<>(); // 记忆加油站
@@ -55,12 +57,14 @@ public class SmartAgent extends Group7AgentBase {
     private long lockedTargetExpiryStep = -1L;
 
     // 构造
+    // 构造
     public SmartAgent(int xpos, int ypos, TWEnvironment env, double fuelLevel) {
         super("SmartAgent",xpos, ypos, env, fuelLevel);
         this.ownTargetLockTtlSteps = computeDefaultTargetLockTtl(env);
         enableZoneCoordination();
     }
 
+    // 必须覆写的方法
     // 必须覆写的方法
     @Override
     public String getName() {
@@ -112,6 +116,7 @@ public class SmartAgent extends Group7AgentBase {
             }
         }
         // 检测视野内的Hole并尝试锁定（仅当携带瓷砖时）
+        // 检测视野内的Hole并尝试锁定（仅当携带瓷砖时）
         if (!carriedTiles.isEmpty()) {
             TWHole targetHole = (TWHole) memory.getClosestObjectInSensorRange(TWHole.class);
             if (targetHole != null) {
@@ -121,8 +126,10 @@ public class SmartAgent extends Group7AgentBase {
         }
 
         // 已知加油站
+        // 已知加油站
         if (!knownFuelStations.isEmpty()) {
 
+            // 强制加油（<150）
             // 强制加油（<150）
             if (fuel < FUEL_FORCE_REFuel) {
                 if (this.getEnvironment().inFuelStation(this) && shouldRefuel) {
@@ -132,6 +139,8 @@ public class SmartAgent extends Group7AgentBase {
                 return thinkRefuel();
             }
 
+            // 预警模式（<200）：只做近距离任务
+            // 正常模式（>=200）
             // 预警模式（<200）：只做近距离任务
             // 正常模式（>=200）
             boolean warningMode = fuel < FUEL_WARNING;
@@ -203,6 +212,7 @@ public class SmartAgent extends Group7AgentBase {
         }
 
         // 初始化：生成蛇形往返的所有网格中心点（正行→反行→正行）
+        // 初始化：生成蛇形往返的所有网格中心点（正行→反行→正行）
         if (!gridSearchInitialized) {
             gridCenterXs.clear();
             gridCenterYs.clear();
@@ -254,6 +264,7 @@ public class SmartAgent extends Group7AgentBase {
                 }
 
                 // 蛇形搜索：偶数行正序，奇数行反序
+                // 蛇形搜索：偶数行正序，奇数行反序
                 if (reverse) {
                     Collections.reverse(rowCentersX);
                     Collections.reverse(rowCentersY);
@@ -271,12 +282,14 @@ public class SmartAgent extends Group7AgentBase {
         }
 
         // 找到加油站 → 停止搜索
+        // 找到加油站 → 停止搜索
         if (!knownFuelStations.isEmpty()) {
             gridSearchInitialized = false;
             currentGridIndex = 0;
             return think();
         }
 
+        // 全部扫描完毕 → 重置
         // 全部扫描完毕 → 重置
         if (currentGridIndex >= gridCenterXs.size()) {
             gridSearchInitialized = false;
@@ -359,6 +372,7 @@ public class SmartAgent extends Group7AgentBase {
     }
 
     // 获取最近的记忆加油站
+    // 获取最近的记忆加油站
     private int[] getClosestKnownFuelStation() {
         int x = getX(), y = getY();
         int[] best = null;
@@ -375,6 +389,7 @@ public class SmartAgent extends Group7AgentBase {
     }
 
     // 往返油量检查
+    // 往返油量检查
     private boolean hasEnoughFuelForRoundTrip(int tx, int ty) {
         int[] fuelStation = getClosestKnownFuelStation();
         if (fuelStation == null) return true; // 无加油站 → 允许
@@ -387,6 +402,7 @@ public class SmartAgent extends Group7AgentBase {
         return getFuelLevel() >= total;
     }
 
+    // 加油模式（使用记忆）
     // 加油模式（使用记忆）
     private TWThought thinkRefuel() {
         shouldRefuel = true;
@@ -406,6 +422,7 @@ public class SmartAgent extends Group7AgentBase {
         return safeMove();
     }
 
+    // 捡瓷砖/补洞（预警+油量检查）
     // 捡瓷砖/补洞（预警+油量检查）
     private TWThought thinkPickFill(boolean warningMode) {
         int x = getX(), y = getY();
@@ -446,6 +463,7 @@ public class SmartAgent extends Group7AgentBase {
                 int tx = targetTile.getX(), ty = targetTile.getY();
 
                 // 被队友锁定 → 直接去探索
+                // 被队友锁定 → 直接去探索
                 String targetCell = MemorySideCard.cellKey(tx, ty);
                 if (teammateTargetLeases.containsKey(targetCell) && !teammateTargetLeases.get(targetCell).owner.equals(this.getName())) {
                     return thinkExplore(warningMode);
@@ -473,6 +491,7 @@ public class SmartAgent extends Group7AgentBase {
         if (targetHole != null && !carriedTiles.isEmpty()) {
             int hx = targetHole.getX(), hy = targetHole.getY();
 
+            // 被队友锁定 → 直接去探索
             // 被队友锁定 → 直接去探索
             String targetCell = MemorySideCard.cellKey(hx, hy);
             if (teammateTargetLeases.containsKey(targetCell) && !teammateTargetLeases.get(targetCell).owner.equals(this.getName())) {
@@ -559,6 +578,7 @@ public class SmartAgent extends Group7AgentBase {
     }
 
     // 路径规划 
+    // 路径规划 
     private TWThought hierarchicalPlan(int tx, int ty) {
         String targetCell = MemorySideCard.cellKey(tx, ty);
         if (teammateTargetLeases.containsKey(targetCell) && !teammateTargetLeases.get(targetCell).owner.equals(this.getName())) {
@@ -592,6 +612,7 @@ public class SmartAgent extends Group7AgentBase {
         return safeMove();
     }
 
+    // A* / 贪心 / BFS
     // A* / 贪心 / BFS
     private TWDirection limitedAStar(int tx, int ty) {
         int x0 = getX(), y0 = getY();
@@ -662,6 +683,7 @@ public class SmartAgent extends Group7AgentBase {
     }
 
     // 工具
+    // 工具
     private boolean isHole(int x, int y) {
         return getEnvironment().getObjectGrid().get(x, y) instanceof TWHole;
     }
@@ -718,6 +740,7 @@ public class SmartAgent extends Group7AgentBase {
     }
 
     // 内部节点类
+    // 内部节点类
     private static class Node {
         int x, y;
         Node parent;
@@ -727,6 +750,7 @@ public class SmartAgent extends Group7AgentBase {
         }
     }
 
+    // 环境实时校验
     // 环境实时校验
     // 校验指定位置是否存在可拾取的Tile
     private boolean isTileExist(int x, int y) {
@@ -811,6 +835,7 @@ public class SmartAgent extends Group7AgentBase {
         this.memory.getMemoryGrid().set(x, y, null);
     }
 
+    //锁（from AgentHanny）
     //锁（from AgentHanny）
     private static int computeDefaultTargetLockTtl(TWEnvironment env) {
         int span = Math.max(1, env.getxDimension() + env.getyDimension());
