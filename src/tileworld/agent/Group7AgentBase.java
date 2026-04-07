@@ -241,7 +241,7 @@ public abstract class Group7AgentBase extends TWAgent {
     /**
      * Zone assignment produced by bootstrap manager.
      */
-    protected static class ZoneAssignment {
+    protected class ZoneAssignment {
         public final long epoch;
         public final String manager;
         public final String orientation;
@@ -254,10 +254,18 @@ public abstract class Group7AgentBase extends TWAgent {
             this.epoch = epoch;
             this.manager = manager;
             this.orientation = orientation;
-            this.x1 = x1;
-            this.y1 = y1;
-            this.x2 = x2;
-            this.y2 = y2;
+            int maxX = getEnvironment().getxDimension() - 1;
+            int maxY = getEnvironment().getyDimension() - 1;
+
+            int nx1 = Math.max(0, Math.min(maxX, x1));
+            int ny1 = Math.max(0, Math.min(maxY, y1));
+            int nx2 = Math.max(0, Math.min(maxX, x2));
+            int ny2 = Math.max(0, Math.min(maxY, y2));
+
+            this.x1 = Math.min(nx1, nx2);
+            this.y1 = Math.min(ny1, ny2);
+            this.x2 = Math.max(nx1, nx2);
+            this.y2 = Math.max(ny1, ny2);
         }
 
         public boolean contains(int x, int y) {
@@ -312,6 +320,9 @@ public abstract class Group7AgentBase extends TWAgent {
             return;
         }
 
+        // Use environment agent grid as authoritative membership/position snapshot.
+        // This avoids split-brain manager election when SS visibility is incomplete.
+        refreshKnownGroup7AgentPositionsFromGrid();
         zoneKnownAgentPositions.put(getName(), new Int2D(this.getX(), this.getY()));
 
         List<Message> inbox = new ArrayList<Message>(this.getEnvironment().getMessages());
@@ -347,7 +358,7 @@ public abstract class Group7AgentBase extends TWAgent {
             }
         }
 
-        if (zoneManagerName == null && !zoneKnownAgentPositions.isEmpty()) {
+        if (!zonePlanBuilt && !zoneKnownAgentPositions.isEmpty()) {
             zoneManagerName = chooseLexicographicallySmallest(zoneKnownAgentPositions.keySet());
         }
 
@@ -359,6 +370,27 @@ public abstract class Group7AgentBase extends TWAgent {
             ZoneAssignment mine = zoneAssignmentsByAgent.get(getName());
             if (mine != null) {
                 myZoneAssignment = mine;
+            }
+        }
+    }
+
+    private void refreshKnownGroup7AgentPositionsFromGrid() {
+        ObjectGrid2D grid = this.getEnvironment().getAgentGrid();
+        int xDim = this.getEnvironment().getxDimension();
+        int yDim = this.getEnvironment().getyDimension();
+
+        for (int x = 0; x < xDim; x++) {
+            for (int y = 0; y < yDim; y++) {
+                Object obj = grid.get(x, y);
+                if (!(obj instanceof Group7AgentBase)) {
+                    continue;
+                }
+                Group7AgentBase agent = (Group7AgentBase) obj;
+                String name = agent.getName();
+                if (name == null || name.isEmpty()) {
+                    continue;
+                }
+                zoneKnownAgentPositions.put(name, new Int2D(x, y));
             }
         }
     }

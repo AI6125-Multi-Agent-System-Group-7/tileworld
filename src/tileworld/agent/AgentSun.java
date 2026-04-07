@@ -342,7 +342,8 @@ public class AgentSun extends Group7AgentBase {
         }
 
         if (zoneSweepY > zone.y2) {
-            zoneSweepY = zone.y1; // wrap back to top of zone
+            // Force one boundary strip scan instead of wrapping immediately.
+            zoneSweepY = zone.y2;
         }
 
         return new Int2D(zoneSweepX, zoneSweepY);
@@ -431,7 +432,9 @@ public class AgentSun extends Group7AgentBase {
 
     // Fuel management
     private TWThought handleFuelManagement() {
-        if (getEnvironment().inFuelStation(this) && shouldRefuel(CRITICAL_FUEL_MARGIN)) {
+        // Always top up when standing on station and tank is not full.
+        if (getEnvironment().inFuelStation(this)
+                && getFuelLevel() < Parameters.defaultFuelLevel) {
             return new TWThought(TWAction.REFUEL, TWDirection.Z);
         }
         if (isCriticalFuelLevel()) {

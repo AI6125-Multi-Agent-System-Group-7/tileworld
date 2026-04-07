@@ -15,7 +15,7 @@ import tileworld.agent.classdefines.MemorySideCardEntry;
 
 public class SmartAgent extends Group7AgentBase {
 
-    // ===================== 配置 =====================
+    // 配置
     private static final double FUEL_FORCE_REFuel = 150;   // 强制加油
     private static final double FUEL_WARNING = 200;       // 预警层
     private static final int RECENT_MAX = 10;
@@ -24,7 +24,7 @@ public class SmartAgent extends Group7AgentBase {
     private static final int ASTAR_MAX_NODES = 150;
     private static final int SAFETY_FUEL_BUFFER = 20;     // 往返安全余量
 
-    // ===================== 状态 =====================
+    // 状态 
     private final Deque<int[]> recentPositions = new ArrayDeque<>();
     private final Set<int[]> knownFuelStations = new HashSet<>(); // 记忆加油站
     private final Random rand = new Random();
@@ -54,14 +54,14 @@ public class SmartAgent extends Group7AgentBase {
     private long lockedTargetStep = -1L;
     private long lockedTargetExpiryStep = -1L;
 
-    // ===================== 构造 =====================
+    // 构造
     public SmartAgent(int xpos, int ypos, TWEnvironment env, double fuelLevel) {
         super("SmartAgent",xpos, ypos, env, fuelLevel);
         this.ownTargetLockTtlSteps = computeDefaultTargetLockTtl(env);
         enableZoneCoordination();
     }
 
-    // ===================== 必须覆写的4个方法 =====================
+    // 必须覆写的方法
     @Override
     public String getName() {
         return super.getName();
@@ -111,7 +111,7 @@ public class SmartAgent extends Group7AgentBase {
                 tryAcquireOrKeepTargetLock(tileEntry, step); // 抢占/保持锁
             }
         }
-        // 2. 检测视野内的Hole并尝试锁定（仅当携带瓷砖时）
+        // 检测视野内的Hole并尝试锁定（仅当携带瓷砖时）
         if (!carriedTiles.isEmpty()) {
             TWHole targetHole = (TWHole) memory.getClosestObjectInSensorRange(TWHole.class);
             if (targetHole != null) {
@@ -120,10 +120,10 @@ public class SmartAgent extends Group7AgentBase {
             }
         }
 
-        // ===================== 已知加油站 =====================
+        // 已知加油站
         if (!knownFuelStations.isEmpty()) {
 
-            // ===================== 1. 强制加油（<150） =====================
+            // 强制加油（<150）
             if (fuel < FUEL_FORCE_REFuel) {
                 if (this.getEnvironment().inFuelStation(this) && shouldRefuel) {
                     System.out.println(String.format("%s 已在燃料站位置，执行加油", getName()));
@@ -132,8 +132,8 @@ public class SmartAgent extends Group7AgentBase {
                 return thinkRefuel();
             }
 
-            // ===================== 2. 预警模式（<200）：只做近距离任务 =====================
-            // ===================== 3. 正常模式（>=200） =====================
+            // 预警模式（<200）：只做近距离任务
+            // 正常模式（>=200）
             boolean warningMode = fuel < FUEL_WARNING;
 
             // 有瓷砖/洞 → 拾取/填补
@@ -196,14 +196,13 @@ public class SmartAgent extends Group7AgentBase {
 
     private TWThought thinkGridSearch() {
         final int BLOCK_SIZE = 7;
-        final int HALF_BLOCK = 3;
-
+        
         ZoneAssignment zone = getZoneAssignment();
         if (zone == null) {
             return waitThought();
         }
 
-        // 1. 初始化：生成蛇形往返的所有网格中心点（正行→反行→正行）
+        // 初始化：生成蛇形往返的所有网格中心点（正行→反行→正行）
         if (!gridSearchInitialized) {
             gridCenterXs.clear();
             gridCenterYs.clear();
@@ -216,74 +215,116 @@ public class SmartAgent extends Group7AgentBase {
             // 逐行生成，蛇形往返
             for (int blockY = zone.y1; blockY < mapH; blockY += BLOCK_SIZE) {
                 List<Integer> rowCentersX = new ArrayList<>();
-                int centerY = blockY + HALF_BLOCK;
-                centerY = Math.min(centerY, mapH - 1);
+                List<Integer> rowCentersY = new ArrayList<>(); // 配合可能的 Y 轴偏移
 
-                // 生成当前行所有中心点X（过滤障碍物/边界）
+                int currentBlockHeight = Math.min(BLOCK_SIZE, mapH - blockY);
+                int centerY = blockY + (currentBlockHeight / 2);
+
                 for (int blockX = zone.x1; blockX < mapW; blockX += BLOCK_SIZE) {
-                    int centerX = blockX + HALF_BLOCK;
-                    centerX = Math.min(centerX, mapW - 1);
-                    // 过滤：目标点不能是障碍物/边界/洞
-                    if (!isOutOfBounds(centerX, centerY) 
-                        && !isObstacle(centerX, centerY) 
-                        && !isHole(centerX, centerY)) {
-                        rowCentersX.add(centerX);
+                    int currentBlockWidth = Math.min(BLOCK_SIZE, mapW - blockX);
+                    int centerX = blockX + (currentBlockWidth / 2);
+
+                    // 防止中心点恰好是障碍物导致丢弃整个 7x7 视野区
+                    // 由内向外螺旋寻找最近的非障碍物有效点（搜索半径最大为 3）
+                    int validX = -1, validY = -1;
+                    outerLoop:
+                    for (int r = 0; r <= 3; r++) { 
+                        for (int dx = -r; dx <= r; dx++) {
+                            for (int dy = -r; dy <= r; dy++) {
+                                // 仅检查当前圈层，避免重复检查
+                                if (Math.max(Math.abs(dx), Math.abs(dy)) != r) continue;
+                                
+                                int nx = centerX + dx;
+                                int ny = centerY + dy;
+                                // 过滤：目标点不能是障碍物/边界/洞
+                                if (!isOutOfBounds(nx, ny) && !isObstacle(nx, ny) && !isHole(nx, ny)) {
+                                    validX = nx;
+                                    validY = ny;
+                                    break outerLoop;
+                                }
+                            }
+                        }
+                    }
+
+                    // 只要找到了有效点，就加入路径点列表
+                    if (validX != -1) {
+                        rowCentersX.add(validX);
+                        rowCentersY.add(validY);
                     }
                 }
 
-                // 蛇形核心：偶数行正序，奇数行反序
+                // 蛇形搜索：偶数行正序，奇数行反序
                 if (reverse) {
                     Collections.reverse(rowCentersX);
+                    Collections.reverse(rowCentersY);
                 }
                 reverse = !reverse;
 
                 // 加入总列表
-                for (int x : rowCentersX) {
-                    gridCenterXs.add(x);
-                    gridCenterYs.add(centerY);
+                for (int i = 0; i < rowCentersX.size(); i++) {
+                    gridCenterXs.add(rowCentersX.get(i));
+                    gridCenterYs.add(rowCentersY.get(i));
                 }
             }
 
             gridSearchInitialized = true;
         }
 
-        // 2. 找到加油站 → 停止搜索
+        // 找到加油站 → 停止搜索
         if (!knownFuelStations.isEmpty()) {
             gridSearchInitialized = false;
             currentGridIndex = 0;
             return think();
         }
 
-        // 3. 全部扫描完毕 → 重置
+        // 全部扫描完毕 → 重置
         if (currentGridIndex >= gridCenterXs.size()) {
             gridSearchInitialized = false;
             currentGridIndex = 0;
             return safeMove();
         }
 
-        // 4. 前往下一个蛇形中心点（避障版）
-        int targetX = gridCenterXs.get(currentGridIndex);
-        int targetY = gridCenterYs.get(currentGridIndex);
+        while (currentGridIndex < gridCenterXs.size()) {
+            int targetX = gridCenterXs.get(currentGridIndex);
+            int targetY = gridCenterYs.get(currentGridIndex);
 
-        // 已到达目标点附近（曼哈顿距离≤2，允许绕路误差）
-        double distToTarget = manhattan(getX(), getY(), targetX, targetY);
-        if (distToTarget <= 2) {
-            memorizeVisibleFuelStations(); // 扫描视野
-            currentGridIndex++; // 切换下一个目标点
-            // 如果还有下一个点，直接规划路径；否则返回安全移动
-            if (currentGridIndex < gridCenterXs.size()) {
-                targetX = gridCenterXs.get(currentGridIndex);
-                targetY = gridCenterYs.get(currentGridIndex);
-            } else {
-                return safeMove();
+            // 动态判断允许的绕路误差
+            // 判定该目标点是否是负责扫描地图边缘的“关键点”（距离边界视野不足或刚等于视野）
+            boolean nearEdge = (targetX - zone.x1 <= 3) || (zone.x2 - targetX <= 3) ||
+                               (targetY - zone.y1 <= 3) || (zone.y2 - targetY <= 3);
+
+            // 如果是边缘点，误差必须严格为 0，否则“提前掉头”会导致 agent 看不到最外层的墙根(x=0 等)；
+            // 如果是中间点，继续允许 2 的绕路误差。
+            double allowedDist = nearEdge ? 0 : 2;
+
+            double distToTarget = manhattan(getX(), getY(), targetX, targetY);
+            
+            // 已到达目标点要求距离
+            if (distToTarget <= allowedDist) {
+                memorizeVisibleFuelStations(); // 扫描视野
+                currentGridIndex++; // 切换下一个目标点
+                continue;
             }
+
+            // 当前目标点如果在区域内不可达，尝试使用左/上/右三个相邻点，
+            // 这适用于障碍物仅占一格的情况，避免直接跳过整行。
+            if (!isReachableInZone(targetX, targetY, zone)) {
+                int[] alt = resolveBlockedCenterTarget(targetX, targetY, zone);
+                if (alt != null) {
+                    return hierarchicalPlan(alt[0], alt[1]);
+                }
+                currentGridIndex++;
+                continue;
+            }
+
+            // 使用 hierarchicalPlan 规划路径
+            return hierarchicalPlan(targetX, targetY);
         }
 
-        // 核心修改：使用hierarchicalPlan（带A*/BFS/贪心避障）规划路径
-        return hierarchicalPlan(targetX, targetY);
+        return safeMove();
     }
 
-    // ===================== 记忆加油站 =====================
+    // 记忆加油站
     private void memorizeVisibleFuelStations() {
         int x = getX();
         int y = getY();
@@ -317,7 +358,7 @@ public class SmartAgent extends Group7AgentBase {
         }
     }
 
-    // ===================== 获取最近的记忆加油站 =====================
+    // 获取最近的记忆加油站
     private int[] getClosestKnownFuelStation() {
         int x = getX(), y = getY();
         int[] best = null;
@@ -333,7 +374,7 @@ public class SmartAgent extends Group7AgentBase {
         return best;
     }
 
-    // ===================== 往返油量检查（新增核心） =====================
+    // 往返油量检查
     private boolean hasEnoughFuelForRoundTrip(int tx, int ty) {
         int[] fuelStation = getClosestKnownFuelStation();
         if (fuelStation == null) return true; // 无加油站 → 允许
@@ -346,7 +387,7 @@ public class SmartAgent extends Group7AgentBase {
         return getFuelLevel() >= total;
     }
 
-    // ===================== 加油模式（使用记忆） =====================
+    // 加油模式（使用记忆）
     private TWThought thinkRefuel() {
         shouldRefuel = true;
         // 优先视野内
@@ -365,7 +406,7 @@ public class SmartAgent extends Group7AgentBase {
         return safeMove();
     }
 
-    // ===================== 捡瓷砖/补洞（预警+油量检查） =====================
+    // 捡瓷砖/补洞（预警+油量检查）
     private TWThought thinkPickFill(boolean warningMode) {
         int x = getX(), y = getY();
 
@@ -404,7 +445,7 @@ public class SmartAgent extends Group7AgentBase {
             if (targetTile != null) {
                 int tx = targetTile.getX(), ty = targetTile.getY();
 
-                // ========== 被队友锁定 → 直接去探索 ==========
+                // 被队友锁定 → 直接去探索
                 String targetCell = MemorySideCard.cellKey(tx, ty);
                 if (teammateTargetLeases.containsKey(targetCell) && !teammateTargetLeases.get(targetCell).owner.equals(this.getName())) {
                     return thinkExplore(warningMode);
@@ -432,7 +473,7 @@ public class SmartAgent extends Group7AgentBase {
         if (targetHole != null && !carriedTiles.isEmpty()) {
             int hx = targetHole.getX(), hy = targetHole.getY();
 
-            // ========== 被队友锁定 → 直接去探索 ==========
+            // 被队友锁定 → 直接去探索
             String targetCell = MemorySideCard.cellKey(hx, hy);
             if (teammateTargetLeases.containsKey(targetCell) && !teammateTargetLeases.get(targetCell).owner.equals(this.getName())) {
                 return thinkExplore(warningMode);
@@ -517,7 +558,7 @@ public class SmartAgent extends Group7AgentBase {
         return safeMove();
     }
 
-    // ===================== 路径规划 =====================
+    // 路径规划 
     private TWThought hierarchicalPlan(int tx, int ty) {
         String targetCell = MemorySideCard.cellKey(tx, ty);
         if (teammateTargetLeases.containsKey(targetCell) && !teammateTargetLeases.get(targetCell).owner.equals(this.getName())) {
@@ -551,7 +592,7 @@ public class SmartAgent extends Group7AgentBase {
         return safeMove();
     }
 
-    // ===================== A* / 贪心 / BFS =====================
+    // A* / 贪心 / BFS
     private TWDirection limitedAStar(int tx, int ty) {
         int x0 = getX(), y0 = getY();
         if (x0 == tx && y0 == ty) return null;
@@ -620,7 +661,7 @@ public class SmartAgent extends Group7AgentBase {
         return null;
     }
 
-    // ===================== 工具 =====================
+    // 工具
     private boolean isHole(int x, int y) {
         return getEnvironment().getObjectGrid().get(x, y) instanceof TWHole;
     }
@@ -676,7 +717,7 @@ public class SmartAgent extends Group7AgentBase {
         return x < 0 || y < 0 || x >= getEnvironment().getxDimension() || y >= getEnvironment().getyDimension();
     }
 
-    // ===================== 内部节点类 =====================
+    // 内部节点类
     private static class Node {
         int x, y;
         Node parent;
@@ -686,7 +727,7 @@ public class SmartAgent extends Group7AgentBase {
         }
     }
 
-    // ===================== 环境实时校验 =====================
+    // 环境实时校验
     // 校验指定位置是否存在可拾取的Tile
     private boolean isTileExist(int x, int y) {
         if (isOutOfBounds(x, y)) return false;
@@ -710,13 +751,67 @@ public class SmartAgent extends Group7AgentBase {
         return obj != null && !(obj instanceof TWTile || obj instanceof TWHole || obj instanceof TWFuelStation);
     }
 
+    private boolean isReachableInZone(int tx, int ty, ZoneAssignment zone) {
+        int x0 = getX();
+        int y0 = getY();
+        if (x0 == tx && y0 == ty) {
+            return true;
+        }
+
+        Queue<Int2D> queue = new LinkedList<>();
+        Set<Long> visited = new HashSet<>();
+        queue.add(new Int2D(x0, y0));
+        visited.add(key(x0, y0));
+
+        while (!queue.isEmpty()) {
+            Int2D current = queue.poll();
+            for (TWDirection d : TWDirection.values()) {
+                int nx = current.x + d.dx;
+                int ny = current.y + d.dy;
+                if (nx < zone.x1 || ny < zone.y1 || nx >= zone.x2 || ny >= zone.y2) {
+                    continue;
+                }
+                if (isOutOfBounds(nx, ny) || isObstacle(nx, ny)) {
+                    continue;
+                }
+                long key = key(nx, ny);
+                if (visited.contains(key)) {
+                    continue;
+                }
+                if (nx == tx && ny == ty) {
+                    return true;
+                }
+                visited.add(key);
+                queue.add(new Int2D(nx, ny));
+            }
+        }
+        return false;
+    }
+
+    private int[] resolveBlockedCenterTarget(int tx, int ty, ZoneAssignment zone) {
+        int[][] offsets = {{-1, 0}, {0, -1}, {1, 0}};
+        for (int[] offset : offsets) {
+            int nx = tx + offset[0];
+            int ny = ty + offset[1];
+            if (nx < zone.x1 || ny < zone.y1 || nx >= zone.x2 || ny >= zone.y2) {
+                continue;
+            }
+            if (isOutOfBounds(nx, ny) || isObstacle(nx, ny) || isHole(nx, ny)) {
+                continue;
+            }
+            if (isReachableInZone(nx, ny, zone)) {
+                return new int[]{nx, ny};
+            }
+        }
+        return null;
+    }
+
     private void removeRecordAndSync(MemoryObjectType type, int x, int y) {
         this.memory.removeAgentPercept(x, y);
         this.memory.getMemoryGrid().set(x, y, null);
     }
 
-    //lock
-
+    //锁（from AgentHanny）
     private static int computeDefaultTargetLockTtl(TWEnvironment env) {
         int span = Math.max(1, env.getxDimension() + env.getyDimension());
         int ttl = span / 6;

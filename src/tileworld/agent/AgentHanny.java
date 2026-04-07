@@ -392,7 +392,8 @@ public class AgentHanny extends Group7AgentBase {
         }
 
         if (zoneSweepY > zone.y2) {
-            zoneSweepY = zone.y1;
+            // Force one boundary strip scan instead of wrapping immediately.
+            zoneSweepY = zone.y2;
         }
 
         return new Int2D(zoneSweepX, zoneSweepY);
@@ -541,7 +542,8 @@ public class AgentHanny extends Group7AgentBase {
         }
 
         if (exploreSweepY > sector.y2) {
-            exploreSweepY = sector.y1;
+            // Force one boundary strip scan instead of wrapping immediately.
+            exploreSweepY = sector.y2;
         }
 
         return new Int2D(exploreSweepX, exploreSweepY);
