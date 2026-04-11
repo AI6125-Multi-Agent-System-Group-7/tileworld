@@ -97,7 +97,7 @@ Our experiment is conducted in a tileworld simulator implemented in Java 1.8 wit
 There are 3 different configurations that affect world size, object lifetime, and object creation distribution. \\
 - Configuration 1: World Size = \(50\times50\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=0.2, \sigma=0.05)\), Lifetime = 100. \\
 - Configuration 2: World Size = \(80\times80\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=2, \sigma=0.5)\), Lifetime = 30. \\
-- Configuration 3: Under covered configurations for competition
+- Configuration 3: World Size = \(120\times120\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=5, \sigma=0.5)\), Lifetime = 50.
 
 \section{Agent Design}
 
@@ -113,9 +113,9 @@ This is designed with intend to keep each agent focus more on their own planning
 This Agent is designed and implemented by Zhang Yanhai, as an agent that dynamically modeling the current environment with observation data gathered from the team and utilizes the estimation in calculating the expected utility in the planning phase.
 
 \paragraph{Planning}
-This agent decides it action based on \textbf{utility over plan}, where plan is a full execution for an action chain, starting from its current position, terminates when the plan is done or failed. For example, \(\{current, ...move..., pickup\space tile, ...move..., drop\space tile\space in\space hole\}\) is a full plan.
+This agent decides its action based on \textbf{utility over plan}, where a plan is an action sequence from the current position. A plan can include pickup-only, fill-only, or mixed pickup+fill targets, and is re-planned when the current target becomes invalid.
 
-To determine this utility of a plan, it is common practice to calculate this with \(EU=P_{success}\cdot Reward_{plan}\). It is immediate that \(Reward_{plan}\) equals to the tile-hole pairs evolved in the plan, as a filled hole has a reward of 1 \cite{tileworld_project_spec}. 
+To determine this utility of a plan, we estimate object survival probability and aggregate utilities over all targets in the sequence.
 For \(P_{success}\) we will need to know if the object is still alive at the time/step when the agent reaches there, and it is not a deterministic number if the system did not observe the object spawning. 
 Therefore, survival analysis \cite{kleinbaum2012survival} was used and the agent's belief of an object still alive was modeled by:
 \[
@@ -125,7 +125,6 @@ p_{alive} = e^{-\lambda \Delta t} \quad \in (0,1]
 Here, \(\Delta t\) is the estimated time of arrival from the current time stamp, and \(\lambda\) is a reflecting environment \(hazard\) that affects the agent's expectation of an object still alive. 
 This \(harzard\) will be different across different experiment setups, such as world size and object creation distribution.
 
-Then we can use this model to find how to estimate the \(hazard\) of the environment. 
 We model each observe on an object as a Bernoulli trial, with matching observation with possibility \(P_{match}=\exp(-\lambda \Delta t)\) and a mismatch with possibility \(P_{mismatch}=1 - \exp(-\lambda \Delta t)\). 
 Then we can use the maximum likelihood estimation (MLE) to find the best \(\lambda\) that fits the observation data.
 By computing the gradient of the log-likelihood \(l(P)\), we can then perform the MLE via mini-batch stochastic gradient decent (SGD) with update rule as follows:
@@ -147,22 +146,29 @@ By computing the gradient of the log-likelihood \(l(P)\), we can then perform th
 \end{aligned}
 \]
 
-By using learning rate schedule and gradient clipping, the lambda is then converged to a stable range after 1000 steps on online training, as the curves shown in the figure below.
+By using learning rate schedule and gradient ceiling and clipping, the lambda is then converged to a stable range after 1000 steps on online training, as the curves shown in the figure below.
 
 \begin{figure}[htbp]
     \centering
-    \begin{subfigure}[b]{0.48\linewidth}
+    \begin{subfigure}[b]{0.31\linewidth}
         \centering
         \includegraphics[width=\linewidth]{5000Steps_Para1.jpg}
-        \caption{Object hazards at Environment with Parameters 1}
+        \caption{\(\lambda\) vs Steps - Parameters 1}
         \label{hzd-para1}
     \end{subfigure}
     \hfill
-    \begin{subfigure}[b]{0.48\linewidth}
+    \begin{subfigure}[b]{0.31\linewidth}
         \centering
         \includegraphics[width=\linewidth]{5000Steps_Para2.jpg}
-        \caption{Object hazards at Environment with Parameters 2}
+        \caption{\(\lambda\) vs Steps - Parameters 2}
         \label{hzd-para2}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.31\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{5000Steps_Para3.jpg}
+        \caption{\(\lambda\) vs Steps - Parameters 3}
+        \label{hzd-para3}
     \end{subfigure}
     \caption{Hazard Figure Across Different Environment Settings.}
     \label{hzd-5000steps}
@@ -172,19 +178,33 @@ AgentHanny will then recall objects from memory and form plans with picking up {
 then calculate the expected utility of each plan follows:
 
 \[
-EU_{plan} = \sum_{pickup}{p_{tile-alive} \cdot Reward_{pickup}} + \sum_{fill}{p_{hole-alive} \cdot Reward_{fill}} - Penalty(Distance, FuelCost)
+EU_{plan}
+= \sum_{pickup}{p_{tile-alive} \cdot 0.20}
++ \sum_{fill}{p_{hole-alive} \cdot 1.00}
+- 0.07 \cdot Distance
+- FuelPenalty
 \]
 
-Then choose and execute the plan with the highest expected utility. 
-If failed to recall any possible plan options, do zig-zag exploration to make actions continious and systematic.
+The planner enumerates feasible target sequences (with carry-capacity constraints and depth limit), then chooses the plan with the highest expected utility.
+If failed to recall any possible plan options, do exploration to make actions continious and systematic.
 
 \paragraph{Communications}
-Agent Hanny strctly follows the communication protocol defined in the Group7AgentBase class by target locking objects when plan is made, and release the lock when action is done or plan cancelled.
+Agent Hanny follows the protocol defined in \texttt{Group7AgentBase} and consumes team messages each think cycle. It uses:
+Target lock is acquired/kept for the \emph{current execution target} (not for every recalled target at plan creation time), renewed before expiry, and released when target is completed, invalidated, pre-empted, or when mode switches (e.g., refuel/re-plan).
 
 \paragraph{Memory Layer}
-In order to make the online MLE in plannign phase possible, AgentHanny keeps a memory side-card to record additional information that original \texttt{TWAgentWorkingMemory} does not provide.
-Additional information includes object type, first seen time, last seen time, and whether the object spawnning is observed to provide a hybrid mode of object surviving estimation (probabilistic \& deterministic).
+In order to make the online MLE in planning phase possible, AgentHanny keeps a memory side-card to record additional information that original \texttt{TWAgentWorkingMemory} does not provide.
+Additional information includes object type, first seen time, last seen time, and whether the object spawning is observed, providing a hybrid object-survival estimation mode (probabilistic for unobserved-spawn objects and deterministic lifetime branch for observed-spawn objects).
 This side card is always synchronized with the original working memory, and the information is updated when new observation is made or the object is observed by the team.
+
+\paragraph{Exploration}
+In order to maximize the social welfare, AgentHanny is designed to explore the sections of the tileworld map that are least explored by the team.
+To be more specific, AgentHanny divides the map into a dynamic \(n \times n\) grid, where
+\[
+n = \max\left(1,\left\lfloor \frac{\min(\text{width},\text{height})}{15}\right\rfloor\right).
+\]
+Each section is scored with negative signals from teammate density, explored coverage, and distance from current position. 
+Sections whose center has a too-long distance from AgentHanny is excluded. The section with the best score is selected, and if no valid section exists, the agent falls back to zig-zag exploration.
 
 \subsection{Agent 2 - <Role / Name>}
 % Describe objective, local policy, planner, memory, strengths/weaknesses.

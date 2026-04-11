@@ -66,14 +66,15 @@ public class AgentHanny extends Group7AgentBase {
     private static final double PLAN_FILL_UTILITY = 1.00;
     private static final double PLAN_DISTANCE_COST = 0.07;
     private static final double PLAN_FUEL_PENALTY = 10.0;
-    private static final int EXPLORE_GRID_SPLIT = 3;
+    private static final int EXPLORE_GRID_TARGET_CELL_SIZE = 15;
+    private static final int EXPLORE_MAX_SECTOR_CENTER_DISTANCE = 100;
     private static final long TEAMMATE_POSITION_TTL = 6L;
     private static final int EXPLORE_SECTOR_SWITCH_COOLDOWN = 4;
     private static final double EXPLORE_TEAMMATE_PENALTY = 1.80;
     private static final double EXPLORE_COVERAGE_PENALTY = 1.20;
     private static final double EXPLORE_DISTANCE_PENALTY = 0.03;
     private static final boolean ENABLE_STEP_LOG = false;
-    private static final boolean ENABLE_RUNTIME_LOG = false;
+    private static final boolean ENABLE_RUNTIME_LOG = true;
     private static final int LOCK_TTL_MIN_STEPS = 8;
     private static final int LOCK_TTL_MAX_STEPS = 20;
     private static final int LOCK_RENEW_BEFORE_STEPS = 2;
@@ -106,7 +107,7 @@ public class AgentHanny extends Group7AgentBase {
     private int zoneSweepY;
     private boolean zoneSweepRight;
 
-    // Adaptive exploration over 3x3 sectors.
+    // Adaptive exploration over dynamic n x n sectors.
     private final SectorRect[] exploreSectors;
     private final boolean[][] exploredEver;
     private final int[] exploredCellsPerSector;
@@ -150,9 +151,10 @@ public class AgentHanny extends Group7AgentBase {
         this.zoneSweepX = 0;
         this.zoneSweepY = 0;
         this.zoneSweepRight = true;
-        this.exploreSectors = buildExploreSectors(env.getxDimension(), env.getyDimension());
+        int exploreGridSplit = computeExploreGridSplit(env.getxDimension(), env.getyDimension());
+        this.exploreSectors = buildExploreSectors(env.getxDimension(), env.getyDimension(), exploreGridSplit);
         this.exploredEver = new boolean[env.getxDimension()][env.getyDimension()];
-        this.exploredCellsPerSector = new int[EXPLORE_GRID_SPLIT * EXPLORE_GRID_SPLIT];
+        this.exploredCellsPerSector = new int[this.exploreSectors.length];
         this.currentExploreSectorId = -1;
         this.lastExploreSectorSwitchStep = Long.MIN_VALUE / 4;
         this.exploreSweepKey = null;
@@ -465,6 +467,9 @@ public class AgentHanny extends Group7AgentBase {
             double coverage = sectorCoverage(i);
             Int2D center = sector.center();
             int dist = manhattan(this.getX(), this.getY(), center.x, center.y);
+            if (dist > EXPLORE_MAX_SECTOR_CENTER_DISTANCE) {
+                continue;
+            }
 
             double score = 0.0;
             score -= EXPLORE_TEAMMATE_PENALTY * teammates;
@@ -592,17 +597,26 @@ public class AgentHanny extends Group7AgentBase {
         return -1;
     }
 
-    private SectorRect[] buildExploreSectors(int xDim, int yDim) {
-        int[] xSizes = splitSizes(xDim, EXPLORE_GRID_SPLIT);
-        int[] ySizes = splitSizes(yDim, EXPLORE_GRID_SPLIT);
+    private int computeExploreGridSplit(int xDim, int yDim) {
+        int mapSize = Math.min(xDim, yDim);
+        int split = mapSize / EXPLORE_GRID_TARGET_CELL_SIZE;
+        if (split < 1) {
+            return 1;
+        }
+        return split;
+    }
 
-        List<SectorRect> sectors = new ArrayList<SectorRect>(EXPLORE_GRID_SPLIT * EXPLORE_GRID_SPLIT);
+    private SectorRect[] buildExploreSectors(int xDim, int yDim, int split) {
+        int[] xSizes = splitSizes(xDim, split);
+        int[] ySizes = splitSizes(yDim, split);
+
+        List<SectorRect> sectors = new ArrayList<SectorRect>(split * split);
         int yStart = 0;
         int id = 0;
-        for (int row = 0; row < EXPLORE_GRID_SPLIT; row++) {
+        for (int row = 0; row < split; row++) {
             int yEnd = yStart + ySizes[row] - 1;
             int xStart = 0;
-            for (int col = 0; col < EXPLORE_GRID_SPLIT; col++) {
+            for (int col = 0; col < split; col++) {
                 int xEnd = xStart + xSizes[col] - 1;
                 sectors.add(new SectorRect(id, xStart, yStart, xEnd, yEnd));
                 xStart = xEnd + 1;
