@@ -39,7 +39,7 @@
   \texttt{zhuoheng001@e.ntu.edu.sg} \\
    \And
   Lou Enge \\
-  <Matric Number> \\
+  <G2504803B> \\
   \texttt{enge001@e.ntu.edu.sg} \\
    \And
   Sun Qingmo \\
@@ -133,10 +133,66 @@ To be more specific, AgentHanny divides the map into a dynamic \(n \times n\) gr
 Each section is scored with negative signals from teammate density, explored coverage, and distance from current position. 
 Sections whose center has a too-long distance from AgentHanny is excluded. The section with the best score is selected, and if no valid section exists, the agent falls back to zig-zag exploration.
 
-\subsection{Agent 2 - <Role / Name>}
-% Describe objective, local policy, planner, memory, strengths/weaknesses.
+\subsection{AgentEnge -- The Priority-Driven Planner}
 
-\lipsum[1] % placeholder
+This agent is designed and implemented by Lou Enge as an agent that operates via a
+strict four-level priority state machine, combining obstacle-aware A* path planning
+with a lawnmower exploration strategy and G7P2-compatible target-lock conflict avoidance.
+
+\paragraph{Planning}
+AgentEnge makes decisions through a prioritised cascade evaluated every think cycle:
+\begin{enumerate}
+  \item \textbf{Survival} (fuel $<$ 180): all other goals are suspended; the agent
+        navigates to the nearest known fuel station, re-discovering it through
+        lawnmower scan if not yet in memory.
+  \item \textbf{Fill-Hole} (carrying $\geq 1$ tile and a hole is in memory):
+        the agent selects a fill target by iterating holes in memory sorted by
+        Manhattan distance, skipping any hole that has already disappeared from
+        the environment grid or is held under a higher-priority teammate lock,
+        then navigates to the first remaining candidate.
+  \item \textbf{Pickup} (carried tiles $< 3$ and a tile is in sensor range):
+        acquire a target lock and navigate to the nearest visible tile.
+  \item \textbf{Exploration}: lawnmower scan of the assigned zone.
+\end{enumerate}
+Path planning uses an internal A* implementation with Manhattan-distance heuristic.
+Before committing to a path, the agent evaluates feasibility against two criteria:
+remaining fuel must exceed path length, and for objects with finite lifetimes the
+estimated travel steps must not exceed the object's remaining time-to-live.
+If A* fails or the cost check rejects the path, the agent refreshes its obstacle
+memory from the current sensor view and retries up to $k=3$ times before
+abandoning the target.
+
+\paragraph{Communications}
+AgentEnge adheres to the G7P2 protocol and processes all cooperative messages
+each think cycle (see Section~4 for protocol details).
+Its primary contribution to the conflict-avoidance layer is issuing \texttt{TL}
+messages upon entering Pickup or Fill-Hole mode, renewed each cycle with a TTL
+of $[8, 20]$ steps and an inverse-distance priority score.
+A higher-priority teammate lock immediately pre-empts the local target,
+redirecting the agent to exploration without a wasted trip.
+
+\paragraph{Memory \& Obstacle Handling}
+AgentEnge maintains two layers of position history to suppress oscillation:
+a short deque (depth 3) for immediate back-tracking avoidance and a longer deque
+(depth 8) for two-cell-cycle detection ($A{\to}B{\to}A{\to}B$ patterns).
+When either pattern is detected the lawnmower cursor is forcibly advanced and the
+agent takes one unconstrained step to escape.
+Because \texttt{TWFuelStation} is not a \texttt{TWObject} and is therefore not
+automatically stored by the framework's working memory, the agent manually scans
+its sensor footprint each step and writes any observed fuel station directly into
+the memory grid.
+
+\paragraph{Exploration}
+The lawnmower scan partitions the map into rows of height equal to the sensor
+diameter ($2r+1=7$ cells), sweeping left-to-right on even passes and
+right-to-left on odd passes with a step size of 7.
+Each agent's starting cursor is offset by a hash of its name to prevent
+six agents from scanning in lockstep at startup.
+During the zone-bootstrap phase the scan is clipped to the agent's ZA-assigned
+rectangle; after coordination completes, soft repulsion from teammate SS positions
+nudges waypoints away from dense clusters to reduce sensor overlap.
+If the computed waypoint is already occupied by the agent, the cursor advances
+immediately to avoid a null-path spin.
 
 \subsection{Agent 3 - <Role / Name>}
 % Describe objective, local policy, planner, memory, strengths/weaknesses.
