@@ -12,7 +12,9 @@
 \usepackage{microtype}      % microtypography
 \usepackage{lipsum}
 \usepackage{fancyhdr}       % header
+\usepackage{subcaption}
 \usepackage{graphicx}       % graphics
+\usepackage{amsmath}
 \graphicspath{{media/}}     % organize your images and other figures under media/ folder
 
 %Header
@@ -21,7 +23,7 @@
 \rhead{ \textit{ }} 
 
 % Update your Headers here
-\fancyhead[LO]{Running Title for Header}
+\fancyhead[LO]{AI6125 Group 7 Project Report}
 % \fancyhead[RE]{Firstauthor and Secondauthor} % Firstauthor et al. if more than 2 - must use \documentclass[twoside]{article}
 
   
@@ -95,28 +97,53 @@ Our experiment is conducted in a tileworld simulator implemented in Java 1.8 wit
 There are 3 different configurations that affect world size, object lifetime, and object creation distribution. \\
 - Configuration 1: World Size = \(50\times50\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=0.2, \sigma=0.05)\), Lifetime = 100. \\
 - Configuration 2: World Size = \(80\times80\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=2, \sigma=0.5)\), Lifetime = 30. \\
-- Configuration 3: Under covered configurations for competition
+- Configuration 3: World Size = \(120\times120\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=5, \sigma=0.5)\), Lifetime = 50.
 
 \section{Agent Design}
+
+\subsection{Group7AgentBase - Abstract Base Class}
+
+We centralized basic Agent behaviors to this base agent class that extends the \texttt{TWAgent} class. 
+
+Group7AgentBase is a reusable control and coordination layer for all Group 7 agents. 
+It standardizes low-level mobility with A* path planning, path reuse/clearing, obstacle-aware stepping, and a deterministic zig-zag fallback for exploration when no high-level target is available. 
+It also provides fuel-station handling so subclasses can focus on policy rather than survival plumbing. 
+On communication, the base defines the G7P2 protocol and parser, supports directed and broadcast messages, and auto-emits basic messages like discovery and sensor snapshots.
 
 \subsection{AgentHanny - The Proactive Learner}
 
 This Agent is designed and implemented by Zhang Yanhai, as an agent that dynamically modeling the current environment with observation data gathered from the team and utilizes the estimation in calculating the expected utility in the planning phase.
 
 \paragraph{Planning}
-This agent decides it action based on \textbf{utility over plan}, where plan is a full execution for an action chain, starting from its current position, terminates when the plan is done or failed. For example, \(\{current, ...move..., pickup\space tile, ...move..., drop\space tile\space in\space hole\}\) is a full plan.
+This agent decides its action based on \textbf{utility over plan}, where a plan is an action sequence from the current position. 
+To determine this, we estimate object survival probability and aggregate utilities over all targets in the sequence.
+Survival analysis \cite{kleinbaum2012survival} was used for estimating the object existing probability and the full derivation is included in the appendix.
 
-To determine this utility of a plan, it is common practice to calculate this with \(EU=P_{success}\cdot Reward_{plan}\). It is immediate that \(Reward_{plan}\) equals to the tile-hole pairs evolved in the plan, as a filled hole has a reward of 1 \cite{tileworld_project_spec}. For \(P_{success}\) we will need to know if the object is still alive at the time/step when the agent reaches there, and it is not a deterministic number if the system did not observe the object spawning. Therefore, survival analysis \cite{kleinbaum2012survival} was used and the agent's belief of an object still alive was modeled by:
-\[
-p_{alive} = e^{-\lambda \Delta t} \space\space\space \in (0,1]
-\]
-Here, \(\Delta t\) is the estimated time of arrival from the current time stamp, and \(\lambda\) is a reflecting environment \(hazard\) that affects the agent's expectation of an object still alive. This \(harzard\) will be different across different experiment setups, such as world size and object creation distribution.
+AgentHanny will form plans from memory with picking up {1...available-carry-space} tiles and filling them to {1...expected-carried-tiles} holes, 
+then calculate the expected utility (details in the appendix).
+Then the plan with highest EU will be selected and executed, with Target Lock send to teammates.
+The agent action flow can be summarized as follows:
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.8\linewidth]{AgentHannyFlow.png}
+    \caption{AgentHanny Action Flow}
+\end{figure}
 
 \paragraph{Communications}
-As inherited from BaseAgent class, this agent will send a vision snapshot every step and new objects observed in the broadcast channel, to provide teammates with necessary information.
+Agent Hanny follows the protocol defined in \texttt{Group7AgentBase} and consumes team messages each think cycle. It uses:
+Target lock is acquired/kept for the \emph{current execution target} (not for every recalled target at plan creation time), renewed before expiry, and released when target is completed, invalidated, pre-empted, or when mode switches (e.g., refuel/re-plan).
 
 \paragraph{Memory Layer}
-Meow~mory Nya-er! Purrrr
+In order to make the online MLE possible, AgentHanny keeps a memory side-card to record additional information that \texttt{TWAgentWorkingMemory} does not provide.
+Additional information includes objectType, firstSeen, lastSeen, etc.
+This side card is always synchronized with the original working memory, and the information is updated when new observation is made.
+
+\paragraph{Exploration}
+In order to maximize the social welfare, AgentHanny is designed to explore the sections of the tileworld map that are least explored by the team.
+To be more specific, AgentHanny divides the map into a dynamic \(n \times n\) grid, where n is set to \(WorldSize//15\).
+Each section is scored with negative signals from teammate density, explored coverage, and distance from current position. 
+Sections whose center has a too-long distance from AgentHanny is excluded. The section with the best score is selected, and if no valid section exists, the agent falls back to zig-zag exploration.
 
 \subsection{Agent 2 - <Role / Name>}
 % Describe objective, local policy, planner, memory, strengths/weaknesses.
@@ -142,10 +169,6 @@ Meow~mory Nya-er! Purrrr
 % Describe objective, local policy, planner, memory, strengths/weaknesses.
 
 \lipsum[1] % placeholder
-
-\subsection{Group7AgentBase - Abstract Base Class}
-
-We centralized basic Agent behaviors to this base agent class that extends the TWAgent class. Basic operations including finding a path with the A* algorithm and steps towards the target, finding and recording position of the fuel station, defines communication protocol, zig-zag exploration, and auto-sending most basic messages. This is designed with intend to keep each agent focus more on their own planning and communication processes. 
 
 \section{Agent Communication \& Collaboration}
 
@@ -185,5 +208,77 @@ We centralized basic Agent behaviors to this base agent class that extends the T
 \bibliographystyle{unsrt}  
 \bibliography{references}  
 
+\appendix{\textbf{Appendix}}
+
+[AgentHanny] \\
+Deriviation of the object survival probability estimation and the online MLE process for hazard estimation.
+\[
+p_{alive} = e^{-\lambda \Delta t} \quad \in (0,1]
+\]
+
+Here, \(\Delta t\) is the estimated time of arrival from the current time stamp, and \(\lambda\) is a reflecting environment \(hazard\) that affects the agent's expectation of an object still alive. 
+This \(harzard\) will be different across different experiment setups, such as world size and object creation distribution.
+
+We model each observe on an object as a Bernoulli trial, with matching observation with possibility \(P_{match}=\exp(-\lambda \Delta t)\) and a mismatch with possibility \(P_{mismatch}=1 - \exp(-\lambda \Delta t)\). 
+Then we can use the maximum likelihood estimation (MLE) to find the best \(\lambda\) that fits the observation data.
+By computing the gradient of the negative log-likelihood \(l(P)\), we can then perform the MLE via mini-batch stochastic gradient decent (SGD) with update rule as follows:
+
+\[
+\begin{aligned}
+\text{Upon Match} \quad
+\frac{\partial \ell}{\partial \lambda}
+&= -\Delta t
+\quad \Longrightarrow \quad
+\lambda \leftarrow \max\big(0, \lambda - \eta \Delta t \big)
+\\[10pt]
+\text{Upon MisMatch} \quad
+\frac{\partial \ell}{\partial \lambda}
+&= \frac{\Delta t\, e^{-\lambda \Delta t}}{1 - e^{-\lambda \Delta t}}
+= \frac{\Delta t}{e^{\lambda \Delta t} - 1} \quad \Longrightarrow \quad
+\lambda \leftarrow \lambda + \eta \cdot
+\frac{\Delta t}{e^{\lambda \Delta t} - 1 + \epsilon}
+\end{aligned}
+\]
+
+By using learning rate schedule and gradient ceiling and clipping, the lambda is then converged to a stable range after 1000 steps on online training, as the curves shown in the figure below.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{subfigure}[b]{0.31\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{5000Steps_Para1.jpg}
+        \caption{\(\lambda\) vs Steps - Parameters 1}
+        \label{hzd-para1}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.31\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{5000Steps_Para2.jpg}
+        \caption{\(\lambda\) vs Steps - Parameters 2}
+        \label{hzd-para2}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.31\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{5000Steps_Para3.jpg}
+        \caption{\(\lambda\) vs Steps - Parameters 3}
+        \label{hzd-para3}
+    \end{subfigure}
+    \caption{Hazard Figure Across Different Environment Settings (without smoothing).}
+    \label{hzd-5000steps}
+\end{figure}
+
+[AgentHanny] \\
+Expected utility deriviation on a plan with multiple targets:
+
+\[
+EU_{plan}
+= \sum_{pickup}{p_{tile-alive} \cdot 0.20}
++ \sum_{fill}{p_{hole-alive} \cdot 1.00}
+- 0.07 \cdot Distance
+- FuelPenalty
+\]
+
+% Sdditional details
 
 \end{document}

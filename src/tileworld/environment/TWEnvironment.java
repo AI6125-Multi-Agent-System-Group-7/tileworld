@@ -11,13 +11,19 @@ import sim.engine.Steppable;
 import sim.field.grid.ObjectGrid2D;
 import sim.util.Bag;
 import sim.util.Int2D;
-import sun.font.TrueTypeFont;
+//import sun.font.TrueTypeFont;
 import tileworld.Parameters;
 import tileworld.TWGUI;
 import tileworld.agent.Message;
-import tileworld.agent.MyAgent;
+import tileworld.Parameters;
+import tileworld.TWGUI;
+import tileworld.agent.Message;
+import tileworld.agent.AgentEnge;
 import tileworld.agent.AgentHanny;
-import tileworld.agent.SimpleTWAgent;
+import tileworld.agent.SmartAgent;
+import tileworld.agent.AgentSun;
+import tileworld.agent.AgentDeng;
+import tileworld.agent.AgentWuV2;
 import tileworld.agent.TWAgent;
 
 /**
@@ -61,6 +67,7 @@ public class TWEnvironment extends SimState implements Steppable {
     private TWFuelStation fuelingStation;
     
     private ArrayList<Message> messages; // the communication channel
+    private boolean messageBlackholeEnabled;
     
     private int reward;
 
@@ -93,6 +100,7 @@ public class TWEnvironment extends SimState implements Steppable {
         obstacles = new Bag();
         reward = 0;
         messages = new ArrayList<Message>();
+        messageBlackholeEnabled = Parameters.messageBlackholeEnabled;
     }
     
     @Override
@@ -109,38 +117,35 @@ public class TWEnvironment extends SimState implements Steppable {
 
         schedule.scheduleRepeating(this, 1, 1.0);
         
-        //Now we create some agents
+        //Now we create some agents（演示时每人可换成自己的 AgentXxx；联调时再组合各人实现）
         Int2D pos = this.generateRandomLocation();
-        // createAgent(new MyAgent("MyAgent - Agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
-        createAgent(new AgentHanny("MyAgent - Agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentHanny("Hanny - Agent1", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentHanny("Hanny - Agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentEnge("Enge - Agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentHanny("Anonymous - Agent3", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new SmartAgent(pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentHanny("Anonymous - Agent4", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentWuV2("Wu - Agent4", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentHanny("Anonymous - Agent5", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentSun("Sun - Agent5", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
                 
         // Please Change to your agent! Six for making the initial search space assignment...
         pos = this.generateRandomLocation(); // random spawn point each time lah
-        createAgent(new AgentHanny("Anonymous - Agent6", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
+        createAgent(new AgentDeng("Deng - Agent6", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
 
         // pos = this.generateRandomLocation(); // example of adding agent
         // createAgent(new SimpleTWAgent("agent2", pos.getX(), pos.getY(), this, Parameters.defaultFuelLevel));
-        
+
         //create the fueling station
         pos = this.generateRandomLocation();
         fuelingStation = new TWFuelStation(pos.getX(), pos.getY(),this);
-
-
 
     }
 
@@ -204,7 +209,25 @@ public class TWEnvironment extends SimState implements Steppable {
     }
     
     public void receiveMessage(Message m){
+    	if (messageBlackholeEnabled) {
+    		return;
+    	}
     	messages.add(m);
+    }
+
+    /**
+     * Ablation helper: when enabled, all incoming messages are dropped.
+     * Existing queued messages are cleared immediately.
+     */
+    public void setMessageBlackholeEnabled(boolean enabled) {
+    	this.messageBlackholeEnabled = enabled;
+    	if (enabled) {
+    		messages.clear();
+    	}
+    }
+
+    public boolean isMessageBlackholeEnabled() {
+    	return messageBlackholeEnabled;
     }
     
     /**

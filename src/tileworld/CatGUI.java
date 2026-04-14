@@ -61,7 +61,7 @@ public class CatGUI extends GUIState {
 
     // ============= Meow World Display Settings ============= //
     private static final int BASE_CELL_SIZE_IN_PIXELS = 44;
-    private static final double DISPLAY_SCALE = 0.39;  // adjust to ur screen
+    private static final double DISPLAY_SCALE = 0.22;  // adjust to ur screen
     private static final int CELL_SIZE_IN_PIXELS =
             (int) Math.round(BASE_CELL_SIZE_IN_PIXELS * DISPLAY_SCALE);
 

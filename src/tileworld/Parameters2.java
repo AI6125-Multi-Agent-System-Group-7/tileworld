@@ -39,4 +39,8 @@ public class Parameters2 {
     // the life time of each object
     public static final int lifeTime = 30;
 
+    // Ablation switch: when true, environment drops all inter-agent messages.
+    // Default false to keep normal communication behavior.
+    public static final boolean messageBlackholeEnabled = false;
+
 }

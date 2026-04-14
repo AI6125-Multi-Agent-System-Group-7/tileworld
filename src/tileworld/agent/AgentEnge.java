@@ -10,7 +10,7 @@ import tileworld.agent.utils.SensorSnapshotCodec.SnapshotItem;
 import tileworld.environment.*;
 
 /**
- * MyAgent - 智能Tileworld智能体实现
+ * AgentEnge - 智能Tileworld智能体实现
  *
  * 继承 {@link Group7AgentBase} 以启用 G7P2（SS/NT/NH/OB/FS/PK/FH、ZA/ZK 分区），
  * 便于与组内其他 agent 协作；决策逻辑仍为本地 A* + 优先级状态机。
@@ -21,7 +21,7 @@ import tileworld.environment.*;
  * 3. 拾取模式（空间未满且有Tile）
  * 4. 探索模式（犁地式扫描）
  */
-public class MyAgent extends Group7AgentBase {
+public class AgentEnge extends Group7AgentBase {
 
     /** 与 G7P2 TL/TR 对齐：目标格是 Tile 还是 Hole */
     private enum LockKind {
@@ -63,41 +63,25 @@ public class MyAgent extends Group7AgentBase {
     private long lockedTargetStep;
     private long lockedTargetExpiryStep;
 
-    /** 最近几个位置（用于打断小范围循环，比如“两格互跳/三格环跳”） */
+    /** 来自队友 SS 报文头中的 (x,y)，用于探索阶段软排斥、减少传感器叠在一起 */
+    private final Map<String, Int2D> teammatePositionsFromSnapshot;
+
+    /** 上一次移动前的位置：用于避免“两格互跳” */
+    private Int2D lastMoveFrom;
+
+    /** 最近访问过的位置（短历史），用于去抖/防循环 */
     private final Deque<Int2D> recentPositions;
 
-    /** 更长历史：用于探索阶段的“整体防循环层” */
+    /** 更长历史（探索阶段防循环层） */
     private final Deque<Int2D> positionHistory;
 
-    /** 当前探索计划象限（用于减少聚堆），-1 表示未选定 */
-    private int explorationQuadrant = -1;
-
-    /** 最近一次广播的探索象限（避免每 tick 都发） */
-    private int lastBroadcastExplorationQuadrant = -1;
-    private long lastBroadcastExplorationQuadrantStep = -1L;
-
-    /** 队友当前象限（来自 SS，最简单的“我在哪里”） */
-    private final Map<String, Integer> teammateCurrentQuadrants;
-
-    /** 队友最近一次 SS 报文中的坐标（用于探索 A* 硬去重） */
-    private final Map<String, Int2D> teammateLastKnownPositions;
-    private final Map<String, Long> teammateLastKnownPositionSteps;
-
-    /** 队友计划象限（来自 EQ，最简单的“我要去哪里”） */
-    private final Map<String, Integer> teammatePlannedQuadrants;
-    private final Map<String, Long> teammatePlannedQuadrantSteps;
-
-    /** 探索 A* 的临时去重：将队友所在格当作临时阻塞 */
-    private Set<Integer> explorationBlockedCellKeys;
-    private boolean explorationAvoidTeammatesInAStar;
-
-    /** 上一 tick 离开的格子；用于强制禁止“立刻走回去”的两格互跳 */
-    private Int2D lastMoveFrom;
+    /** 连续原地等待次数（MOVE(Z)） */
+    private int consecutiveWaitMoves = 0;
 
     // 目标对象（用于追踪）
     private TWEntity targetEntity = null;
 
-    public MyAgent(String name, int xpos, int ypos, TWEnvironment env, double fuelLevel) {
+    public AgentEnge(String name, int xpos, int ypos, TWEnvironment env, double fuelLevel) {
         super(name, xpos, ypos, env, fuelLevel);
         this.zoneSweepKey = null;
         this.zoneSweepTarget = null;
@@ -105,16 +89,10 @@ public class MyAgent extends Group7AgentBase {
         this.zoneSweepY = 0;
         this.zoneSweepRight = true;
         this.teammateTargetLeases = new HashMap<String, TargetLease>();
+        this.teammatePositionsFromSnapshot = new HashMap<String, Int2D>();
+        this.lastMoveFrom = null;
         this.recentPositions = new ArrayDeque<Int2D>();
         this.positionHistory = new ArrayDeque<Int2D>();
-        this.lastMoveFrom = null;
-        this.teammateCurrentQuadrants = new HashMap<String, Integer>();
-        this.teammateLastKnownPositions = new HashMap<String, Int2D>();
-        this.teammateLastKnownPositionSteps = new HashMap<String, Long>();
-        this.teammatePlannedQuadrants = new HashMap<String, Integer>();
-        this.teammatePlannedQuadrantSteps = new HashMap<String, Long>();
-        this.explorationBlockedCellKeys = null;
-        this.explorationAvoidTeammatesInAStar = false;
         this.ownTargetLockTtlSteps = computeDefaultTargetLockTtl(env);
         this.lockedTargetCell = null;
         this.lockedTargetKind = null;
@@ -581,13 +559,12 @@ public class MyAgent extends Group7AgentBase {
         releaseOwnTargetLock("explore");
 
         // -------- 探索模式强制防循环 --------
-        // 不管 currentPath 是否存在，只要近期位置已经显示出两格互跳/停滞，就立即打断本轮路径。
-        if (detectExplorationOscillation()) {
+        if ((currentPath == null || currentPath.isEmpty()) && detectExplorationOscillation()) {
             currentPath = null;
             currentTarget = null;
-            // 强制推进扫描锚点，避免下一 tick 仍然朝同一个不可达/卡住点规划。
-            advanceScanCursor();
-            return new TWThought(TWAction.MOVE, TWDirection.Z);
+            advanceScanCursor(); // 推进犁地游标，避免一直尝试同一个点
+            // 不要无条件等待，否则 positionHistory 可能一直满足“原地卡住”
+            return getAnyValidDirection();
         }
 
         // 如果当前有路径且目标位置有效，继续执行
@@ -599,48 +576,35 @@ public class MyAgent extends Group7AgentBase {
                 currentPath = null;
                 currentTarget = null;
             } else {
-                int curX = this.getX();
-                int curY = this.getY();
                 TWDirection nextDir = currentPath.remove(0);
                 System.out.println(String.format("[%s] [探索模式] 继续执行路径，剩余步数=%d，下一步=%s，目标=(%d,%d)", 
                     getName(), currentPath.size(), nextDir, currentTarget.x, currentTarget.y));
-                // 禁止立刻走回上一格，减少“两格互跳”
-                if (lastMoveFrom != null && lastMoveFrom.x == curX + nextDir.dx && lastMoveFrom.y == curY + nextDir.dy) {
+                // 禁止立刻走回上一格，减少两格互跳
+                if (lastMoveFrom != null
+                        && lastMoveFrom.x == this.getX() + nextDir.dx
+                        && lastMoveFrom.y == this.getY() + nextDir.dy) {
                     currentPath = null;
                     currentTarget = null;
-                    return new TWThought(TWAction.MOVE, TWDirection.Z);
+                    advanceScanCursor();
+                    return getAnyValidDirection();
                 }
                 return new TWThought(TWAction.MOVE, nextDir);
             }
-        }
-        
-        // 进入探索“新一轮决策”时，选一个当前最少人数的象限。
-        // 这样能避免 6 个 agents 在同一象限互相挤导致某些象限无人。
-        long step = getEnvironment().schedule.getSteps();
-        if (currentPath == null || currentPath.isEmpty()) {
-            explorationQuadrant = selectLeastCrowdedQuadrant(step);
-        }
-
-        // -------- 探索阶段整体防循环层（仅在当前无路径时生效）--------
-        if ((currentPath == null || currentPath.isEmpty()) && detectExplorationOscillation()) {
-            currentPath = null;
-            currentTarget = null;
-            // 若正处在扫描游标附近，推进游标一步，避免锚点不前导致反复抖动
-            if (Math.abs(this.getX() - scanCol) <= 1 && Math.abs(this.getY() - scanRow) <= 1) {
-                advanceScanCursor();
-            }
-            return new TWThought(TWAction.MOVE, TWDirection.Z);
         }
         
         // 计算下一个扫描目标位置
         Int2D nextScanPos = calculateNextScanPosition();
         
         if (nextScanPos != null) {
-            // 缓存当前位置，避免同一段逻辑里重复读取 getX()/getY() 导致取整/刷新不一致
-            int curX = this.getX();
-            int curY = this.getY();
             if (isZoneCoordinationComplete() && hasZoneAssignment()) {
                 nextScanPos = clipPointToAssignedZone(nextScanPos);
+            }
+            nextScanPos = nudgeExploreAwayFromTeammates(nextScanPos);
+
+            // 已在扫描目标点：推进游标，避免 path.isEmpty() 被当成失败导致随机走动
+            if (this.getX() == nextScanPos.x && this.getY() == nextScanPos.y) {
+                advanceScanCursor();
+                return getAnyValidDirection();
             }
 
             // 限制探索模式最多移动到y=46（除非y=47-49有物体需要拾取）
@@ -666,81 +630,26 @@ public class MyAgent extends Group7AgentBase {
                         getName(), maxY));
                 }
             }
-
-            // 防抖：当 start==goal 时，A*常返回空路径（不需要移动）。
-            // 若你此时仍走“失败=>随机方向”，就会在相邻格反复抖动，看起来像上下左右循环。
-            if (curX == nextScanPos.x && curY == nextScanPos.y) {
-                currentPath = null;
-                currentTarget = null;
-                // 当前位置已经正好在“扫描锚点”上：不应该继续随机走。
-                // 推进扫描游标，避免 calculateNextScanPosition() 下一 tick 仍然返回同一个目标格。
-                scanCol = nextScanPos.x;
-                scanRow = nextScanPos.y;
-                advanceScanCursor();
-                return new TWThought(TWAction.MOVE, TWDirection.Z);
-            }
             
             System.out.println(String.format("[%s] [探索模式] 计算扫描目标=(%d,%d)，当前位置=(%d,%d)", 
-                getName(), nextScanPos.x, nextScanPos.y, curX, curY));
+                getName(), nextScanPos.x, nextScanPos.y, this.getX(), this.getY()));
             // 规划路径到扫描位置
-            // 为减少多个 agents 走同一条探索走廊：在探索阶段的 A* 扩展邻居时，把“队友上一帧所在格”当作临时障碍。
-            long nowStep = getEnvironment().schedule.getSteps();
-            explorationBlockedCellKeys = buildExplorationBlockedCellKeys(nowStep);
-            explorationAvoidTeammatesInAStar = true;
-            List<TWDirection> path = aStarPathfinding(new Int2D(curX, curY), nextScanPos);
-            explorationAvoidTeammatesInAStar = false;
-            explorationBlockedCellKeys = null;
+            List<TWDirection> path = aStarPathfinding(new Int2D(this.getX(), this.getY()), nextScanPos);
             
-            if (path != null && !path.isEmpty()) {
+            if (path != null) {
+                if (path.isEmpty()) {
+                    // start==goal：推进游标而不是随机走动
+                    advanceScanCursor();
+                    return getAnyValidDirection();
+                }
                 this.currentPath = new ArrayList<>(path); // 创建副本，避免直接修改
                 this.currentTarget = nextScanPos;
                 System.out.println(String.format("[%s] [探索模式] A*路径规划成功，路径长度=%d，下一步=%s", 
                     getName(), path.size(), path.get(0)));
-                // 防止下一步直接落回最近位置（两点互跳/三点环跳）
-                TWDirection firstDir = path.get(0);
-                int nx = this.getX() + firstDir.dx;
-                int ny = this.getY() + firstDir.dy;
-                boolean inRecent = false;
-                if (this.lastMoveFrom != null && this.lastMoveFrom.x == nx && this.lastMoveFrom.y == ny) {
-                    inRecent = true;
-                }
-                for (Int2D rp : recentPositions) {
-                    if (!inRecent && rp != null && rp.x == nx && rp.y == ny) {
-                        inRecent = true;
-                        break;
-                    }
-                }
-                if (inRecent) {
-                    // 等一拍，让扫描锚点/环境状态再变化，避免在小集合格子间来回
-                    this.currentPath = null;
-                    this.currentTarget = null;
-                    return new TWThought(TWAction.MOVE, TWDirection.Z);
-                }
-                return new TWThought(TWAction.MOVE, firstDir);
-            } else {
-                // A* 返回空列表常见于 start==goal（或路径构造失败但不需要移动）
-                // 这类情况如果直接随机方向，会导致当前位置与相邻格反复抖动。
-                // 无论 path==null 还是 path.isEmpty，只要我们已经在扫描锚点上，就必须推进锚点并原地等待一拍。
-                if (path != null && path.isEmpty()) {
-                    currentPath = null;
-                    currentTarget = null;
-                    scanCol = nextScanPos.x;
-                    scanRow = nextScanPos.y;
-                    advanceScanCursor();
-                    return new TWThought(TWAction.MOVE, TWDirection.Z);
-                }
-
-                // 兜底：即使 A* 返回 null（例如临时阻塞导致），如果我们已在扫描锚点上，也不要随机走开
-                if (curX == nextScanPos.x && curY == nextScanPos.y) {
-                    currentPath = null;
-                    currentTarget = null;
-                    scanCol = nextScanPos.x;
-                    scanRow = nextScanPos.y;
-                    advanceScanCursor();
-                    return new TWThought(TWAction.MOVE, TWDirection.Z);
-                }
-                System.out.println(String.format("[%s] [探索模式] A*路径规划失败，无法到达扫描目标，使用随机方向", getName()));
+                return new TWThought(TWAction.MOVE, path.get(0));
             }
+
+            System.out.println(String.format("[%s] [探索模式] A*路径规划失败，无法到达扫描目标，使用随机方向", getName()));
         }
         
         // 如果无法规划路径，使用简单的方向移动（也要限制y坐标）
@@ -790,11 +699,11 @@ public class MyAgent extends Group7AgentBase {
     }
 
     /**
-     * 探索阶段的循环检测：
+     * 探索阶段的简单循环检测：
      * - 两格互跳：A->B->A->B
      * - 或最近 4 次都停在同一格（原地卡住）
      *
-     * 注意：只在当前无路径（currentPath 为空/无效）时调用，避免打断正常的长路径推进。
+     * 只用于“当前没有路径时”的防循环层。
      */
     private boolean detectExplorationOscillation() {
         if (positionHistory == null || positionHistory.size() < 4) {
@@ -829,109 +738,43 @@ public class MyAgent extends Group7AgentBase {
         return allSame;
     }
 
-    private int selectLeastCrowdedQuadrant(long step) {
-        int xDim = getEnvironment().getxDimension();
-        int yDim = getEnvironment().getyDimension();
-        int maxY = 46; // 与探索锚点 clamp 保持一致
-
-        // 记录自己所在象限
-        int myQuad = computeQuadrant(getX(), getY(), xDim, yDim);
-
-        int[] counts = new int[] {0, 0, 0, 0};
-        counts[myQuad] += 1;
-
-        // 用“近期的计划象限”优先于“当前象限”，其余才使用 SS 推断。
-        // 只要队友还在探索/刚切换任务，计划消息会很快起作用。
-        HashSet<String> teammates = new HashSet<String>();
-        teammates.addAll(teammateCurrentQuadrants.keySet());
-        teammates.addAll(teammatePlannedQuadrants.keySet());
-
-        for (String t : teammates) {
-            if (t == null || t.equals(getName())) {
-                continue;
-            }
-            Integer q = null;
-            Long ps = teammatePlannedQuadrantSteps.get(t);
-            if (ps != null && (step - ps) <= 2) {
-                q = teammatePlannedQuadrants.get(t);
-            }
-            if (q == null) {
-                q = teammateCurrentQuadrants.get(t);
-            }
-            if (q == null) {
-                continue;
-            }
-            if (q >= 0 && q <= 3) {
-                counts[q] += 1;
-            }
-        }
-
-        // 计算每个象限在探索范围内是否“可探索”（避免选到 y 区间为空的象限）
-        int xMid = Math.max(1, xDim / 2);
-        int yMid = yDim / 2;
-        for (int q = 0; q < 4; q++) {
-            int yMin;
-            int yMax;
-            switch (q) {
-                case 0: // left-up
-                case 1: // right-up
-                    yMin = 0;
-                    yMax = Math.min(maxY, yMid - 1);
-                    break;
-                case 2: // left-down
-                case 3: // right-down
-                default:
-                    yMin = yMid;
-                    yMax = maxY;
-                    break;
-            }
-            if (yMin > yMax) {
-                counts[q] = Integer.MAX_VALUE / 2;
-            }
-        }
-
-        int min = counts[0];
-        for (int q = 1; q < 4; q++) {
-            min = Math.min(min, counts[q]);
-        }
-
-        if (min >= Integer.MAX_VALUE / 4) {
-            // 所有象限不可探索时，退化到不做象限约束
-            return 0;
-        }
-
-        // 平局时用 agent 名的 hash 做稳定打散
-        int bestQ = 0;
-        double bestScore = Double.POSITIVE_INFINITY;
-        for (int q = 0; q < 4; q++) {
-            if (counts[q] != min) {
-                continue;
-            }
-            double score = (Math.abs(getName().hashCode() + q * 1315423911) % 1000) / 1000.0;
-            if (score < bestScore) {
-                bestScore = score;
-                bestQ = q;
-            }
-        }
-
-        return bestQ;
-    }
-
     /**
-     * quadrantId:
-     * 0 = 左上, 1 = 右上, 2 = 左下, 3 = 右下
+     * 推进犁地式扫描游标一步，避免在“当前点==目标点/不可达点”上抖动。
      */
-    private int computeQuadrant(int x, int y, int xDim, int yDim) {
-        int xMid = Math.max(1, xDim / 2);
-        int yMid = yDim / 2;
+    private void advanceScanCursor() {
+        int xDim = this.getEnvironment().getxDimension();
+        int yDim = this.getEnvironment().getyDimension();
+        int maxY = 46;
 
-        boolean left = x < xMid;
-        boolean top = y < yMid;
+        if (scanDirectionRight) {
+            scanCol += SCAN_STEP;
+            if (scanCol >= xDim) {
+                scanCol = xDim - 1;
+                scanRow += SCAN_STEP;
+                scanDirectionRight = false;
+            }
+        } else {
+            scanCol -= SCAN_STEP;
+            if (scanCol < 0) {
+                scanCol = 0;
+                scanRow += SCAN_STEP;
+                scanDirectionRight = true;
+            }
+        }
 
-        if (left && top) return 0;
-        if (!left && top) return 1;
-        if (left && !top) return 2;
-        return 3;
+        if (scanRow > maxY) {
+            scanRow = maxY;
+        }
+
+        // 若越出地图则重置扫描起点（与 calculateNextScanPosition 保持一致）
+        if (scanRow >= yDim) {
+            scanRow = 3;
+            scanCol = 3;
+            scanDirectionRight = true;
+        }
+
+        scanCol = Math.max(0, Math.min(scanCol, xDim - 1));
+        scanRow = Math.max(0, Math.min(Math.min(scanRow, yDim - 1), maxY));
     }
     
     /**
@@ -980,110 +823,8 @@ public class MyAgent extends Group7AgentBase {
         // 确保坐标在有效范围内，并限制y坐标不超过46
         scanCol = Math.max(0, Math.min(scanCol, xDim - 1));
         scanRow = Math.max(0, Math.min(scanRow, Math.min(yDim - 1, maxY)));
-        clampScanCursorToExplorationQuadrant(xDim, yDim, maxY);
         
         return new Int2D(scanCol, scanRow);
-    }
-
-    /**
-     * 推进犁地式扫描游标一步（与 calculateNextScanPosition() 中“到达/接近锚点后”的推进逻辑一致）。
-     * 用于解决“当前位置==扫描目标但仍继续失败=>随机方向”的抖动问题。
-     */
-    private void advanceScanCursor() {
-        int xDim = this.getEnvironment().getxDimension();
-        int yDim = this.getEnvironment().getyDimension();
-        int maxY = 46; // 限制扫描最多到y=46
-
-        // 移动到下一个扫描位置
-        if (scanDirectionRight) {
-            scanCol += SCAN_STEP;
-            if (scanCol >= xDim) {
-                // 到达右边界，换行
-                scanCol = xDim - 1;
-                scanRow += SCAN_STEP;
-                scanDirectionRight = false;
-            }
-        } else {
-            scanCol -= SCAN_STEP;
-            if (scanCol < 0) {
-                // 到达左边界，换行
-                scanCol = 0;
-                scanRow += SCAN_STEP;
-                scanDirectionRight = true;
-            }
-        }
-
-        // 限制扫描行不超过y=46
-        if (scanRow > maxY) {
-            scanRow = maxY;
-        }
-
-        // 检查是否超出地图范围
-        if (scanRow >= yDim) {
-            // 重新开始扫描，从第四行第四列开始（y=3, x=3）
-            scanRow = 3;
-            scanCol = 3;
-            scanDirectionRight = true;
-        }
-
-        // 确保坐标在有效范围内，并限制y坐标不超过46
-        scanCol = Math.max(0, Math.min(scanCol, xDim - 1));
-        scanRow = Math.max(0, Math.min(scanRow, Math.min(yDim - 1, maxY)));
-        clampScanCursorToExplorationQuadrant(xDim, yDim, maxY);
-    }
-
-    /**
-     * 把探索锚点 scanCol/scanRow 限制到当前选定象限，避免探索游标漂到别的象限。
-     */
-    private void clampScanCursorToExplorationQuadrant(int xDim, int yDim, int maxY) {
-        if (explorationQuadrant < 0 || explorationQuadrant > 3) {
-            return;
-        }
-
-        int xMid = Math.max(1, xDim / 2);
-        int yMid = yDim / 2;
-
-        int xMin;
-        int xMax;
-        int yMin;
-        int yMax;
-
-        // quadrantId:
-        // 0 = 左上, 1 = 右上, 2 = 左下, 3 = 右下
-        switch (explorationQuadrant) {
-            case 0:
-                xMin = 0;
-                xMax = xMid - 1;
-                yMin = 0;
-                yMax = Math.min(maxY, yMid - 1);
-                break;
-            case 1:
-                xMin = xMid;
-                xMax = xDim - 1;
-                yMin = 0;
-                yMax = Math.min(maxY, yMid - 1);
-                break;
-            case 2:
-                xMin = 0;
-                xMax = xMid - 1;
-                yMin = yMid;
-                yMax = maxY;
-                break;
-            default: // 3
-                xMin = xMid;
-                xMax = xDim - 1;
-                yMin = yMid;
-                yMax = maxY;
-                break;
-        }
-
-        // 若象限在可探索范围内退化为空区间，回退到原值（避免除零/越界）。
-        if (xMin > xMax || yMin > yMax) {
-            return;
-        }
-
-        scanCol = Math.max(xMin, Math.min(scanCol, xMax));
-        scanRow = Math.max(yMin, Math.min(scanRow, yMax));
     }
     
     /**
@@ -1217,14 +958,6 @@ public class MyAgent extends Group7AgentBase {
                 if (this.getEnvironment().isCellBlocked(neighbor.x, neighbor.y)) {
                     continue;
                 }
-
-                // 探索阶段：硬去重（临时把队友所在格当作障碍，迫使不同 agents 选择不同第一步）
-                if (explorationAvoidTeammatesInAStar && explorationBlockedCellKeys != null) {
-                    int key = cellKey(neighbor.x, neighbor.y);
-                    if (explorationBlockedCellKeys.contains(key)) {
-                        continue;
-                    }
-                }
                 
                 double tentativeG = current.gCost + 1;
                 AStarNode neighborNode = allNodes.get(neighbor);
@@ -1320,45 +1053,6 @@ public class MyAgent extends Group7AgentBase {
     private double manhattanDistance(Int2D a, Int2D b) {
         return Math.abs(a.x - b.x) + Math.abs(a.y - b.y);
     }
-
-    private static int cellKey(int x, int y) {
-        // 将 (x,y) 压缩成一个 int，用于 HashSet 里的临时障碍判断
-        return ((x & 0xFFFF) << 16) | (y & 0xFFFF);
-    }
-
-    /**
-     * 构建探索阶段 A* 的临时阻塞集合：把“队友上一两步内最后已知所在格”视作障碍。
-     */
-    private Set<Integer> buildExplorationBlockedCellKeys(long nowStep) {
-        Set<Integer> out = new HashSet<Integer>();
-        if (teammateLastKnownPositions == null || teammateLastKnownPositions.isEmpty()) {
-            return out;
-        }
-
-        long ttl = 2; // 只认为最近两步内的队友位置有效
-        int myX = this.getX();
-        int myY = this.getY();
-
-        for (Map.Entry<String, Int2D> e : teammateLastKnownPositions.entrySet()) {
-            String from = e.getKey();
-            Int2D p = e.getValue();
-            if (from == null || p == null) {
-                continue;
-            }
-            if (from.equals(getName())) {
-                continue;
-            }
-            Long ps = teammateLastKnownPositionSteps.get(from);
-            if (ps == null || ps.longValue() < (nowStep - ttl)) {
-                continue;
-            }
-            if (p.x == myX && p.y == myY) {
-                continue;
-            }
-            out.add(cellKey(p.x, p.y));
-        }
-        return out;
-    }
     
     /**
      * A*节点类
@@ -1409,18 +1103,31 @@ public class MyAgent extends Group7AgentBase {
             return new TWThought(TWAction.MOVE, TWDirection.Z);
         }
 
-        // 优先不走回最近位置，减少小范围循环
+        // 尽量避免“立刻走回上一格”，减少两格互跳导致的来回振荡
+        if (lastMoveFrom != null && validDirs.size() > 1) {
+            List<TWDirection> filtered = new ArrayList<>();
+            for (TWDirection dir : validDirs) {
+                int nx = this.getX() + dir.dx;
+                int ny = this.getY() + dir.dy;
+                if (lastMoveFrom.x == nx && lastMoveFrom.y == ny) {
+                    continue;
+                }
+                filtered.add(dir);
+            }
+            if (!filtered.isEmpty()) {
+                validDirs = filtered;
+            }
+        }
+
+        // 再做一次短历史过滤（避免三格短环）
         if (!recentPositions.isEmpty() && validDirs.size() > 1) {
             List<TWDirection> filtered = new ArrayList<>();
             for (TWDirection dir : validDirs) {
-                int newX = this.getX() + dir.dx;
-                int newY = this.getY() + dir.dy;
-                if (this.lastMoveFrom != null && this.lastMoveFrom.x == newX && this.lastMoveFrom.y == newY) {
-                    continue; // 强制避免立刻走回上一格
-                }
+                int nx = this.getX() + dir.dx;
+                int ny = this.getY() + dir.dy;
                 boolean inRecent = false;
                 for (Int2D rp : recentPositions) {
-                    if (rp != null && rp.x == newX && rp.y == newY) {
+                    if (rp != null && rp.x == nx && rp.y == ny) {
                         inRecent = true;
                         break;
                     }
@@ -1429,15 +1136,37 @@ public class MyAgent extends Group7AgentBase {
                     filtered.add(dir);
                 }
             }
-            // 如果所有选择都落在最近位置，就原地等待一拍
             if (!filtered.isEmpty()) {
                 validDirs = filtered;
-            } else {
-                return new TWThought(TWAction.MOVE, TWDirection.Z);
             }
         }
-
+        
         TWDirection chosenDir = validDirs.get(this.getEnvironment().random.nextInt(validDirs.size()));
+        return new TWThought(TWAction.MOVE, chosenDir);
+    }
+
+    /**
+     * 探索阶段“非等待”兜底：忽略 recentPositions/lastMoveFrom 的过滤，
+     * 只要邻接格存在合法移动就走一步，避免原地卡死。
+     */
+    private TWThought getAnyValidDirection() {
+        TWDirection[] directions = {TWDirection.N, TWDirection.S, TWDirection.E, TWDirection.W};
+        List<TWDirection> validDirs = new ArrayList<>();
+        for (TWDirection dir : directions) {
+            int newX = this.getX() + dir.dx;
+            int newY = this.getY() + dir.dy;
+            if (this.getEnvironment().isInBounds(newX, newY)
+                    && !this.getEnvironment().isCellBlocked(newX, newY)
+                    && !this.memory.isCellBlocked(newX, newY)) {
+                validDirs.add(dir);
+            }
+        }
+        if (validDirs.isEmpty()) {
+            return new TWThought(TWAction.MOVE, TWDirection.Z);
+        }
+        TWDirection chosenDir = validDirs.get(this.getEnvironment().random.nextInt(validDirs.size()));
+        System.out.println(String.format("[%s] [探索模式] 防卡点：尝试走一步方向=%s",
+                getName(), chosenDir));
         return new TWThought(TWAction.MOVE, chosenDir);
     }
     
@@ -1445,12 +1174,8 @@ public class MyAgent extends Group7AgentBase {
     protected void act(TWThought thought) {
         Int2D before = new Int2D(this.getX(), this.getY());
         super.act(thought);
-        // 记录行动前/后的位置都不关键，关键是“下一步不要走回最近格”
-        // 这里直接在 act 执行后更新一下 recentPositions：当前格是 next tick 起点
         if (thought != null && thought.getAction() == TWAction.MOVE) {
-            // 由于 super.act 会推进到下一格，act 结束后 this.getX()/getY() 是新位置
-            // 但 recentPositions 用来“禁止回头”，因此在下一 tick 计算随机方向时，能排除这几格
-            this.lastMoveFrom = before; // 下一 tick 若要走回该格，则算互跳，直接拦截
+            lastMoveFrom = before;
             recentPositions.addLast(new Int2D(this.getX(), this.getY()));
             while (recentPositions.size() > 3) {
                 recentPositions.removeFirst();
@@ -1458,18 +1183,20 @@ public class MyAgent extends Group7AgentBase {
             positionHistory.addLast(new Int2D(this.getX(), this.getY()));
             while (positionHistory.size() > 8) {
                 positionHistory.removeFirst();
+            }
+
+            if (thought.getDirection() == TWDirection.Z) {
+                consecutiveWaitMoves++;
+            } else {
+                consecutiveWaitMoves = 0;
             }
         } else {
-            // 非移动动作也允许更新，避免长时间停在同一点后随机跳回
-            this.lastMoveFrom = before;
-            recentPositions.addLast(new Int2D(this.getX(), this.getY()));
-            while (recentPositions.size() > 3) {
-                recentPositions.removeFirst();
-            }
+            // 其他动作也记录当前点，防止“卡住原地”的循环检测失效
             positionHistory.addLast(new Int2D(this.getX(), this.getY()));
             while (positionHistory.size() > 8) {
                 positionHistory.removeFirst();
             }
+            consecutiveWaitMoves = 0;
         }
     }
 
@@ -1484,18 +1211,6 @@ public class MyAgent extends Group7AgentBase {
                     encodeTargetLockPayload(lockedTargetPriority, ownTargetLockTtlSteps)));
             lockedTargetStep = step;
             lockedTargetExpiryStep = step + ownTargetLockTtlSteps;
-        }
-
-        if (explorationQuadrant >= 0 && explorationQuadrant <= 3
-                && explorationQuadrant != lastBroadcastExplorationQuadrant
-                && step != lastBroadcastExplorationQuadrantStep) {
-            outbox.add(createProtocolMessage(
-                    CommType.EXPLORE_QUADRANT_PLAN,
-                    explorationQuadrant,
-                    0,
-                    ""));
-            lastBroadcastExplorationQuadrant = explorationQuadrant;
-            lastBroadcastExplorationQuadrantStep = step;
         }
     }
 
@@ -1532,22 +1247,8 @@ public class MyAgent extends Group7AgentBase {
                     removeHoleFromMemory(pm.x, pm.y);
                     break;
                 case OBS_SENSOR_SNAPSHOT:
-                    // SS 里 x/y 就是队友当前坐标，因此可直接统计象限人数
-                    int quad = computeQuadrant(pm.x, pm.y, getEnvironment().getxDimension(), getEnvironment().getyDimension());
-                    if (quad >= 0 && quad <= 3) {
-                        teammateCurrentQuadrants.put(pm.from, quad);
-                    }
-                    // 保存队友最新坐标（用于探索阶段 A* 硬去重）
-                    teammateLastKnownPositions.put(pm.from, new Int2D(pm.x, pm.y));
-                    teammateLastKnownPositionSteps.put(pm.from, pm.step);
+                    teammatePositionsFromSnapshot.put(pm.from, new Int2D(pm.x, pm.y));
                     applySensorSnapshot(pm.payload);
-                    break;
-                case EXPLORE_QUADRANT_PLAN:
-                    // x = quadrantId (0..3), y = unused
-                    if (pm.x >= 0 && pm.x <= 3) {
-                        teammatePlannedQuadrants.put(pm.from, pm.x);
-                        teammatePlannedQuadrantSteps.put(pm.from, pm.step);
-                    }
                     break;
                 case TARGET_LOCK:
                     handleTeammateTargetLock(pm);
@@ -1956,6 +1657,54 @@ public class MyAgent extends Group7AgentBase {
         int x = Math.max(z.x1, Math.min(z.x2, p.x));
         int y = Math.max(z.y1, Math.min(z.y2, p.y));
         return new Int2D(x, y);
+    }
+
+    /**
+     * 软排斥：若扫描目标与某队友过近（曼哈顿小于约两格传感器直径），沿远离方向微量平移目标。
+     * 数据来自 SS 里的发送者坐标；不协议、不 TL，仅探索用。
+     */
+    private Int2D nudgeExploreAwayFromTeammates(Int2D p) {
+        if (p == null || teammatePositionsFromSnapshot.isEmpty()) {
+            return p;
+        }
+        int r = Parameters.defaultSensorRange;
+        int minManhattan = 2 * r + 1;
+        int xDim = getEnvironment().getxDimension();
+        int yDim = getEnvironment().getyDimension();
+        int maxY = 46;
+        Int2D cur = new Int2D(p.x, p.y);
+
+        for (int attempt = 0; attempt < 4; attempt++) {
+            int pushX = 0;
+            int pushY = 0;
+            for (Map.Entry<String, Int2D> e : teammatePositionsFromSnapshot.entrySet()) {
+                Int2D m = e.getValue();
+                if (m == null) {
+                    continue;
+                }
+                int dist = Math.abs(cur.x - m.x) + Math.abs(cur.y - m.y);
+                if (dist < minManhattan) {
+                    int sx = Integer.signum(cur.x - m.x);
+                    int sy = Integer.signum(cur.y - m.y);
+                    if (sx == 0 && sy == 0) {
+                        sx = 1;
+                    }
+                    pushX += sx;
+                    pushY += sy;
+                }
+            }
+            if (pushX == 0 && pushY == 0) {
+                break;
+            }
+            pushX = Integer.signum(pushX) * Math.min(2, Math.abs(pushX));
+            pushY = Integer.signum(pushY) * Math.min(2, Math.abs(pushY));
+            int nx = cur.x + pushX;
+            int ny = cur.y + pushY;
+            nx = Math.max(0, Math.min(xDim - 1, nx));
+            ny = Math.max(0, Math.min(Math.min(yDim - 1, maxY), ny));
+            cur = new Int2D(nx, ny);
+        }
+        return cur;
     }
 
     // --- 分区.bootstrap：进区前先去区域中心，进区后按传感器步长之字形扫（与 AgentHanny 对齐）---
