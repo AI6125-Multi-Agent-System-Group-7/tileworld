@@ -63,41 +63,29 @@
 \maketitle
 
 \begin{abstract}
-This report presents our group project for AI6125 Multi-Agent Systems, in which we design and evaluate a team of six agents for the Tileworld environment. Tileworld is a dynamic grid-based domain that contains agents, tiles, holes, obstacles, and fuel stations, where agents must collect and deliver tiles to holes under sensing, movement, and fuel constraints with a maximum tile carriage of 3. Our work investigates how different agent roles, planning strategies, and communication mechanisms can boost the collective performance in an in-accessible (partially observable) and dynamic (time-varying) environment \cite{ag_decision_making_1}. We describe the rationale for the design of our six-agent system, the collaboration protocol between agents, the experimental settings used for the evaluation, and the resulting performance analysis across multiple Tileworld configurations.
+This report presents Group 7's six-agent system for Tileworld, a partially observable and dynamic grid environment with fuel, sensing, and carrying constraints.
+Our implementation combines a shared engineering layer (\texttt{Group7AgentBase}), protocol-driven collaboration (G7P2), and agent-specific planning policies.
+We evaluate the system on three parameter sets and report mean reward over repeated runs.
+Results and ablations show that both communication and policy specialization are necessary for strong team performance, especially in larger and more dynamic maps.
 \end{abstract}
 
 
 \section{Introduction \& Background}
 
-Multi-agent systems are concerned with how multiple autonomous agents perceive, decide, act, and coordinate in a shared environment. In this project, we study these issues in Tileworld, a classical testbed for evaluating intelligent agents in dynamic environments. According to the project specification\cite{tileworld_project_spec}, Tileworld is a grid environment populated by agents, tiles, obstacles, holes, and fuel stations. Agents can move one cell at a unit of time in the four cardinal directions, carry up to three tiles, and gain reward by moving tiles into hole cells so that the corresponding holes are filled. In addition, every movement consumes fuel, and each agent follows a Sense->Communicate->Plan->Act cycle at every step. These constraints make the environment suitable for studying bounded rationality, cooperation, and task allocation in a team setting.
+Tileworld is a standard benchmark for studying multi-agent decision making under uncertainty \cite{intro2tileworld,hist_tileworld}. Agents operate on a grid with partial observability, stochastic object dynamics, limited fuel, and finite carrying capacity; hence effective behavior requires both local intelligence and team coordination.
 
-Tileworld has long been used as a benchmark environment for agent research because it is simple to define, yet rich enough to capture important properties of dynamic decision making. The original Tileworld literature \cite{intro2tileworld} describes it as a highly parameterized and unpredictable environment in which objects may appear and disappear over time, allowing researchers to study how different reasoning or meta-reasoning strategies perform under varying environmental conditions\cite{hist_tileworld}. A key idea is that the effectiveness of an agent system design depends not only on the agent itself, but also on environmental properties such as dynamism, obstacle density, and task difficulty.
+In this project, six agents jointly act in the same environment using a Sense$\rightarrow$Communicate$\rightarrow$Plan$\rightarrow$Act loop. We focus on three design questions: (i) how to share local observations efficiently, (ii) how to reduce conflict and duplicated effort, and (iii) how much performance comes from shared infrastructure versus agent-specific policies. The rest of this report presents our implementation, experimental settings, quantitative results, and ablation findings.
 
-For this course project, the provided simulator is implemented in MASON, which is a Java-based agent-based modeling toolkit. The project requires a team of six students, where each member designs one agent and all six agents operate together in the same Tileworld environment. Each agent has a local perception field within a radius defined by
-\[
-\max(|x - X|, |y - Y|) \leq 3,
-\]
-a limited set of actions
-\[
-\{\texttt{WAIT}, \texttt{MOVE\_UP}, \texttt{MOVE\_DOWN}, \texttt{MOVE\_LEFT}, \texttt{MOVE\_RIGHT}, \texttt{PICK\_UP}, \texttt{DROP}, \texttt{REFUEL}\},
-\]
-a carrying capacity of at most three tiles, and optional communication through broadcast messages \cite{tileworld_project_spec}. These constraints naturally introduce challenges in partial observability, decentralized coordination, memory layer design, and resource management.
+\section{Environment \& Experiment Setup}
 
-Motivated by these properties, our project focuses on designing a six-agent cooperative team that can divide work effectively, share useful local information, reduce redundant exploration, and adapt to different environment configurations. In the following sections, we present our experimental setup, the individual design of each of the six agents, the communication and collaboration mechanisms used within the team, and the corresponding results and analysis.
-
-\section{Experiment Setup}
-
-% - Configuration One: 50x50, NormalDistribution(mu=0.2, sigma=0.05), lifetime 100
-% - Configuration Two: 80x80, NormalDistribution(mu=2, sigma=0.5), lifetime 30
-% - Total time steps: 5000
-% - Initial fuel: 500
-
-Our experiment is conducted in a tileworld simulator implemented in Java 1.8 with the Java3D v1.5.1 and MASON 14 package. One simulation will run for 5000 steps and we take the final reward as the metric of the agents system; different simulations will start with a randomly generated seed. The reward is defined by the number of holes filled. The initial fuel is fixed at the maximum fuel carriage of 500.
+Our experiment is conducted in a tileworld simulator implemented in Java 1.8 with the Java3D v1.5.1 and MASON 14 package. One simulation will run for 5000 steps and we take the final reward as the metric of the agents system; 
+different simulations will start with a randomly generated seed. 
+The reward is defined by the number of holes filled. The initial fuel is fixed at the maximum fuel carriage of 500.
 
 There are 3 different configurations that affect world size, object lifetime, and object creation distribution. \\
-- Configuration 1: World Size = \(50\times50\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=0.2, \sigma=0.05)\), Lifetime = 100. \\
-- Configuration 2: World Size = \(80\times80\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=2, \sigma=0.5)\), Lifetime = 30. \\
-- Configuration 3: World Size = \(120\times120\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=5, \sigma=0.5)\), Lifetime = 50.
+- Parameter Set 1: World Size = \(50\times50\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=0.2, \sigma=0.05)\), Lifetime = 100. \\
+- Parameter Set 2: World Size = \(80\times80\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=2, \sigma=0.5)\), Lifetime = 30. \\
+- Parameter Set 3: World Size = \(120\times120\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=5, \sigma=0.5)\), Lifetime = 50.
 
 \section{Agent Design}
 
@@ -172,43 +160,86 @@ Sections whose center has a too-long distance from AgentHanny is excluded. The s
 
 \section{Agent Communication \& Collaboration}
 
-% Describe:
-% - what information is broadcast
-% - recipient conventions if any
-% - task allocation strategy
-% - conflict avoidance
-% - how agents share discovered tiles / holes / obstacles / fuel stations
-% - whether communication is synchronous or opportunistic
-% - how collaboration changes over time
+Communication is implemented in \texttt{Group7AgentBase} under protocol version \texttt{G7P2}, with message tuple \(\langle version, step, from, to, type, x, y, payload\rangle\). 
+In \texttt{TWEnvironment}, \texttt{sense()} and \texttt{communicate()} are scheduled before \texttt{think()} and \texttt{act()}, so messages produced in a step are readable by teammates in that same decision cycle.
 
-\lipsum[1] % placeholder
+The protocol combines sparse events and dense snapshots. 
+Event messages broadcast newly observed objects (\texttt{NT/NH/OB}), one-time fuel-station discovery (\texttt{FS}), and action confirmations (\texttt{PK/FH}). Snapshot message \texttt{SS} encodes local empty/occupied cells each step to refresh shared belief quickly. 
+Collaboration is staged: bootstrap zone assignment uses \texttt{ZA/ZK} (deterministic manager election with bounded retries), while runtime conflict avoidance uses \texttt{TL/TR} target locks with priority and TTL. 
+Together, these mechanisms reduce redundant pursuit and improve task allocation stability under partial observability.
+And the use of target management enpowers our agents to form a expanding area of exploration and exploitation, illustrating as the figure below.
+
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.8\linewidth]{AgentWorkingArea.png}
+    \caption{Dynamic Agents Working Area Indication}
+\end{figure}
+
+So that we may minimize step wasted on unnecessary movements $\notin$ \{plan execution, exploration\}.
 
 \section{Result and Analysis}
 
-% Include:
-% - quantitative results across configurations
-% - comparison between agent variants or team strategies
-% - visualizations/tables if needed
-% - interpretation: what worked, what failed, why
-% - discussion of trade-offs such as specialization vs flexibility
+The following table summarizes the mean rewards achieved by our full system across the three parameter sets, averaged over 10 runs each:
 
-\lipsum[1] % placeholder
+\begin{table}[ht]
+    \centering
+    \begin{tabular}{lccc}
+        \toprule
+            & Parameter 1 & Parameter 2 & Parameter 3 \\
+        \midrule
+        G7 Agent System & 1086.5 & 1397.2 & 2440.8 \\
+        \bottomrule
+    \end{tabular}
+    \caption{Mean Rewards Achieved Across Different Environment Settings}
+    \label{results}
+\end{table}
+
+Mean reward increases from Parameter Set 1 to 3, suggesting that higher object-generation intensity can outweigh the adverse effects of shorter lifetime and larger map size. The full-system performance serves as the reference point; attribution of gains is analyzed through the ablation results below.
+
+\section{Ablation Study}
+
+We investigated the contribution on the core designs of our agent system by disabling each of them and test on each configuration for 10 runs and take the mean value for comparison.
+One is the communication mechanism, we added a \texttt{CommunicationBlackhole} that absorbs all outgoing messages to remove communication layer while keeping other parts of the system exact.
+The other core design is each of our Agent's local policy and planner, we implemented a \texttt{MinimalAgent} that only has the basic mobility and survival functions provided by the \texttt{Group7AgentBase}, 
+with a simple greedy policy to pick up the nearest tile and fill the nearest hole, without any of the additional logic in the original design.
+
+Then we ran the ablation experiments with the settings and the results are shown in the table below.
+
+\begin{table}[ht]
+    \centering
+    \begin{tabular}{lccc}
+        \toprule
+        Design Ablation & Parameter 1 & Parameter 2 & Parameter 3 \\
+        \midrule
+        Full System & \textbf{1086.5} & \textbf{1397.2} & \textbf{2440.8} \\
+        No Communication & 402.2 & 371.7 & 61.4 \\
+        BaseAgent Only & 459.5 & 748.5 & 545.6 \\
+        \bottomrule
+    \end{tabular}
+    \caption{Ablation Experiment Results (Mean Rewards over 10 runs)}
+    \label{ablation-study}
+\end{table}
+
+Ablation reveals the source of improvement. Removing communication reduces reward by \(63.0\%\), \(73.4\%\), and \(97.5\%\) for Sets 1--3, respectively, indicating that shared situational awareness is critical in partially observable and highly dynamic settings. Replacing specialized policies with \texttt{AgentMinimal} also causes substantial drops (\(57.7\%\), \(46.4\%\), \(77.6\%\)), showing that common infrastructure alone is insufficient. Overall, team performance depends on both protocol-level coordination and agent-level planning specialization.
 
 \section{Conclusion}
 
-% Summarize:
-% - what your team built
-% - key findings
-% - major limitations
-% - possible future improvements
+This project developed a six-agent Tileworld system with a shared engineering backbone (\texttt{Group7AgentBase}) and agent-specific decision modules.
+The implemented framework unifies path planning, fuel-safe control, and a structured communication protocol (G7P2), while allowing each agent to introduce distinct planning and memory mechanisms.
 
-\lipsum[1] % placeholder
+Empirically, our results show that the complete system consistently outperforms ablated variants across all tested parameter sets.
+The ablation study further demonstrates that communication and policy specialization are complementary: removing either substantially harms final reward.
+
+The current implementation still has limitations.
+Richer planners or exploration strategies can introduce nontrivial runtime overhead on large maps, and some systems rely heavily on SS message which have a high bandwidth cost.
+Future work should therefore target adaptive communication budgets that manages bandwidth-urgency trade-offs, 
+and tighter integration between global coordination signals and local plan repair to improve robustness under extreme dynamism.
 
 %Bibliography
 \bibliographystyle{unsrt}  
 \bibliography{references}  
 
-\appendix{\textbf{Appendix}}
+\appendix{\large \textbf{Appendix}}
 
 [AgentHanny] \\
 Deriviation of the object survival probability estimation and the online MLE process for hazard estimation.
