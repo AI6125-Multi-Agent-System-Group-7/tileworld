@@ -63,30 +63,18 @@
 \maketitle
 
 \begin{abstract}
-This report presents our group project for AI6125 Multi-Agent Systems, in which we design and evaluate a team of six agents for the Tileworld environment. 
-Tileworld is a dynamic grid-based domain that contains agents, tiles, holes, obstacles, and fuel stations, where agents must collect and deliver tiles to holes under sensing, movement, and fuel constraints with a maximum tile carriage of 3. 
-Our work investigates how different agent roles, planning strategies, and communication mechanisms can boost the collective performance in an in-accessible (partially observable) and dynamic (time-varying) environment \cite{ag_decision_making_1}. 
-We describe the rationale for the design of our six-agent system, the collaboration protocol between agents, the experimental settings used for the evaluation, and the resulting performance analysis across multiple Tileworld configurations.
+This report presents Group 7's six-agent system for Tileworld, a partially observable and dynamic grid environment with fuel, sensing, and carrying constraints.
+Our implementation combines a shared engineering layer (\texttt{Group7AgentBase}), protocol-driven collaboration (G7P2), and agent-specific planning policies.
+We evaluate the system on three parameter sets and report mean reward over repeated runs.
+Results and ablations show that both communication and policy specialization are necessary for strong team performance, especially in larger and more dynamic maps.
 \end{abstract}
 
 
 \section{Introduction \& Background}
 
-Multi-agent systems are concerned with how multiple autonomous agents perceive, decide, act, and coordinate in a shared environment. In this project, we study these issues in Tileworld, a classical testbed for evaluating intelligent agents in dynamic environments. According to the project specification\cite{tileworld_project_spec}, Tileworld is a grid environment populated by agents, tiles, obstacles, holes, and fuel stations. Agents can move one cell at a unit of time in the four cardinal directions, carry up to three tiles, and gain reward by moving tiles into hole cells so that the corresponding holes are filled. In addition, every movement consumes fuel, and each agent follows a Sense->Communicate->Plan->Act cycle at every step. These constraints make the environment suitable for studying bounded rationality, cooperation, and task allocation in a team setting.
+Tileworld is a standard benchmark for studying multi-agent decision making under uncertainty \cite{intro2tileworld,hist_tileworld}. Agents operate on a grid with partial observability, stochastic object dynamics, limited fuel, and finite carrying capacity; hence effective behavior requires both local intelligence and team coordination.
 
-Tileworld has long been used as a benchmark environment for agent research because it is simple to define, yet rich enough to capture important properties of dynamic decision making. The original Tileworld literature \cite{intro2tileworld} describes it as a highly parameterized and unpredictable environment in which objects may appear and disappear over time, allowing researchers to study how different reasoning or meta-reasoning strategies perform under varying environmental conditions\cite{hist_tileworld}. A key idea is that the effectiveness of an agent system design depends not only on the agent itself, but also on environmental properties such as dynamism, obstacle density, and task difficulty.
-
-For this course project, the provided simulator is implemented in MASON, which is a Java-based agent-based modeling toolkit. The project requires a team of six students, where each member designs one agent and all six agents operate together in the same Tileworld environment. Each agent has a local perception field within a radius defined by
-\[
-\max(|x - X|, |y - Y|) \leq 3,
-\]
-a limited set of actions
-\[
-\{\texttt{WAIT}, \texttt{MOVE\_UP}, \texttt{MOVE\_DOWN}, \texttt{MOVE\_LEFT}, \texttt{MOVE\_RIGHT}, \texttt{PICK\_UP}, \texttt{DROP}, \texttt{REFUEL}\},
-\]
-a carrying capacity of at most three tiles, and optional communication through broadcast messages \cite{tileworld_project_spec}. These constraints naturally introduce challenges in partial observability, decentralized coordination, memory layer design, and resource management.
-
-Motivated by these properties, our project focuses on designing a six-agent cooperative team that can divide work effectively, share useful local information, reduce redundant exploration, and adapt to different environment configurations. In the following sections, we present our experimental setup, the individual design of each of the six agents, the communication and collaboration mechanisms used within the team, and the corresponding results and analysis.
+In this project, six agents jointly act in the same environment using a Sense$\rightarrow$Communicate$\rightarrow$Plan$\rightarrow$Act loop. We focus on three design questions: (i) how to share local observations efficiently, (ii) how to reduce conflict and duplicated effort, and (iii) how much performance comes from shared infrastructure versus agent-specific policies. The rest of this report presents our implementation, experimental settings, quantitative results, and ablation findings.
 
 \section{Environment \& Experiment Setup}
 
@@ -172,17 +160,22 @@ Sections whose center has a too-long distance from AgentHanny is excluded. The s
 
 \section{Agent Communication \& Collaboration}
 
-Our team communication is implemented as a shared protocol layer in \texttt{Group7AgentBase} (version tag: \texttt{G7P2}), with message fields
-\(\langle version, step, from, to, type, x, y, payload\rangle\).
-By scheduler design provided by \texttt{TWEnvironment}, each agent executes \texttt{sense()} and \texttt{communicate()} before \texttt{think()} and \texttt{act()} in every step, so all messages emitted in the communication phase are available to all teammates in the same decision cycle.
+Communication is implemented in \texttt{Group7AgentBase} under protocol version \texttt{G7P2}, with message tuple \(\langle version, step, from, to, type, x, y, payload\rangle\). 
+In \texttt{TWEnvironment}, \texttt{sense()} and \texttt{communicate()} are scheduled before \texttt{think()} and \texttt{act()}, so messages produced in a step are readable by teammates in that same decision cycle.
 
-The broadcast channel combines lightweight event messages and dense local-state summaries. 
-Event messages include newly observed objects (\texttt{NT/NH/OB}), one-time fuel-station discovery (\texttt{FS}), and action confirmations (\texttt{PK/FH}). 
-In parallel, each agent sends a per-step sensor snapshot (\texttt{SS}) that encodes local empty and occupied cells. This hybrid design balances bandwidth and freshness: sparse events reduce redundancy, while \texttt{SS} supports rapid correction of stale beliefs.
+The protocol combines sparse events and dense snapshots. 
+Event messages broadcast newly observed objects (\texttt{NT/NH/OB}), one-time fuel-station discovery (\texttt{FS}), and action confirmations (\texttt{PK/FH}). Snapshot message \texttt{SS} encodes local empty/occupied cells each step to refresh shared belief quickly. 
+Collaboration is staged: bootstrap zone assignment uses \texttt{ZA/ZK} (deterministic manager election with bounded retries), while runtime conflict avoidance uses \texttt{TL/TR} target locks with priority and TTL. 
+Together, these mechanisms reduce redundant pursuit and improve task allocation stability under partial observability.
+And the use of target management enpowers our agents to form a expanding area of exploration and exploitation, illustrating as the figure below.
 
-Collaboration occurs in two stages. During bootstrap, optional zone coordination (\texttt{ZA/ZK}) assigns initial search regions via deterministic manager election and bounded retransmission for unacknowledged assignments. 
-After bootstrap, conflict avoidance is handled by target locking (\texttt{TL/TR}) with priority and TTL semantics: a cell-level lock is renewed near expiry, released explicitly on completion/cancellation, and removed by timeout if no renewal is observed. 
-This avoids persistent deadlock while reducing duplicate pursuit under partial observability, forming a automatic expanding area of exploration around Fuel Station since Agents will go explore if all targets are consumed or locked.
+\begin{figure}[ht]
+    \centering
+    \includegraphics[width=0.8\linewidth]{AgentWorkingArea.png}
+    \caption{Dynamic Agents Working Area Indication}
+\end{figure}
+
+So that we may minimize step wasted on unnecessary movements $\notin$ \{plan execution, exploration\}.
 
 \section{Result and Analysis}
 
@@ -192,7 +185,7 @@ The following table summarizes the mean rewards achieved by our full system acro
     \centering
     \begin{tabular}{lccc}
         \toprule
-        Design Ablation & Parameter 1 & Parameter 2 & Parameter 3 \\
+            & Parameter 1 & Parameter 2 & Parameter 3 \\
         \midrule
         G7 Agent System & 1086.5 & 1397.2 & 2440.8 \\
         \bottomrule
@@ -201,18 +194,12 @@ The following table summarizes the mean rewards achieved by our full system acro
     \label{results}
 \end{table}
 
-The increasing absolute reward trend from Parameter Set 1 to 3 is consistent with higher object generation intensity, which creates more service opportunities despite shorter object lifetimes and larger map scale.
-
-The strongest gains arise from coupling memory-based planning with explicit coordination. In the implemented codebase, agents combine local sensing, protocol-level sharing (\texttt{SS} and event messages), and role-specific policies built on a common base layer. This integration improves both \emph{throughput} (more successful tile-to-hole completions) and \emph{efficiency} (fewer redundant chases of already-claimed or expired targets). The effect is most visible in dynamic settings, where stale private memory alone is insufficient.
-
-At the same time, performance remains bounded by two practical trade-offs. First, richer reasoning (plan enumeration, lock arbitration, and message processing) introduces additional per-step computation, which can reduce simulation speed on larger maps. Second, communication is step-synchronous rather than instantaneous across future steps; hence a residual lag remains between local observation and global belief update. Nevertheless, the measured gains indicate that the coordination overhead is justified under the tested regimes.
-
+Mean reward increases from Parameter Set 1 to 3, suggesting that higher object-generation intensity can outweigh the adverse effects of shorter lifetime and larger map size. The full-system performance serves as the reference point; attribution of gains is analyzed through the ablation results below.
 
 \section{Ablation Study}
 
 We investigated the contribution on the core designs of our agent system by disabling each of them and test on each configuration for 10 runs and take the mean value for comparison.
-One is the communication mechanism, we added a \texttt{CommunicationBlackhole} that absorbs all outgoing messages and replaced the message receiving function with an empty function, 
-to remove communication only while keeping other parts of the system intact.
+One is the communication mechanism, we added a \texttt{CommunicationBlackhole} that absorbs all outgoing messages to remove communication layer while keeping other parts of the system exact.
 The other core design is each of our Agent's local policy and planner, we implemented a \texttt{MinimalAgent} that only has the basic mobility and survival functions provided by the \texttt{Group7AgentBase}, 
 with a simple greedy policy to pick up the nearest tile and fill the nearest hole, without any of the additional logic in the original design.
 
@@ -233,13 +220,7 @@ Then we ran the ablation experiments with the settings and the results are shown
     \label{ablation-study}
 \end{table}
 
-We observe three consistent patterns.
-First, removing communication causes a major degradation in all settings: relative to the full system, mean reward drops by \(63.0\%\) (Set 1), \(73.4\%\) (Set 2), and \(97.5\%\) (Set 3).
-This confirms that under partial observability, local policy quality alone cannot compensate for missing shared situational awareness. 
-Also the catastrophic drop in Parameter 3 is caused by a high probability of agents dying from out-of-fuel, which is a direct consequence of missing our initial zone search coordinated by communication.
-
-Second, replacing specialized agents with \texttt{AgentMinimal}-style base behavior also reduces performance substantially: \(57.7\%\), \(46.4\%\), and \(77.6\%\) drops for Sets 1--3 respectively.
-Hence, the common infrastructure in \texttt{Group7AgentBase} is necessary but not sufficient; specialized planners and memory models contribute significantly beyond baseline survivability.
+Ablation reveals the source of improvement. Removing communication reduces reward by \(63.0\%\), \(73.4\%\), and \(97.5\%\) for Sets 1--3, respectively, indicating that shared situational awareness is critical in partially observable and highly dynamic settings. Replacing specialized policies with \texttt{AgentMinimal} also causes substantial drops (\(57.7\%\), \(46.4\%\), \(77.6\%\)), showing that common infrastructure alone is insufficient. Overall, team performance depends on both protocol-level coordination and agent-level planning specialization.
 
 \section{Conclusion}
 
@@ -250,17 +231,15 @@ Empirically, our results show that the complete system consistently outperforms 
 The ablation study further demonstrates that communication and policy specialization are complementary: removing either substantially harms final reward.
 
 The current implementation still has limitations.
-Richer planners / exploration strategies can introduce nontrivial runtime overhead on large maps, and some systems rely heavily on SS message which have a high bandwidth cost.
-Future work should therefore target \\
-(i) automated dynamic strategy orchestration that takes computation and communication bandwidth into account, \\
-(ii) adaptive communication budgets that manages bandwidth-urgency trade-offs, and \\
-(iii) tighter integration between global coordination signals and local plan repair to improve robustness under extreme dynamism.
+Richer planners or exploration strategies can introduce nontrivial runtime overhead on large maps, and some systems rely heavily on SS message which have a high bandwidth cost.
+Future work should therefore target adaptive communication budgets that manages bandwidth-urgency trade-offs, 
+and tighter integration between global coordination signals and local plan repair to improve robustness under extreme dynamism.
 
 %Bibliography
 \bibliographystyle{unsrt}  
 \bibliography{references}  
 
-\appendix{\textbf{Appendix}}
+\appendix{\large \textbf{Appendix}}
 
 [AgentHanny] \\
 Deriviation of the object survival probability estimation and the online MLE process for hazard estimation.
