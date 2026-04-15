@@ -194,10 +194,19 @@ nudges waypoints away from dense clusters to reduce sensor overlap.
 If the computed waypoint is already occupied by the agent, the cursor advances
 immediately to avoid a null-path spin.
 
-\subsection{Agent 3 - <Role / Name>}
-% Describe objective, local policy, planner, memory, strengths/weaknesses.
+\subsection{Agent 3 - <SmartAgent / The Explorer>}
 
-\lipsum[1] % placeholder
+The SmartAgent is a collaborative agent designed for the TileWorld simulation environment. Its core objective is to expand the environmental field of vision through efficient edge-exploration strategies and share key information discovered, such as the location of gas stations, tiles, and holes, with teammates to provide vision support for team.
+
+\paragraph{Core Design Principles}
+The design of intelligent agents revolves around three core principles: safe exploration, controllable fuel, and collaborative sharing. The collaboration protocol follows our communication design.
+
+\paragraph{Think Principles}
+The agent's decision-making logic follows a clear priority hierarchy. When no gas station is found, a serpentine grid search strategy is initiated to locate a gas station. When fuel is below the refueling threshold (150), it prioritizes refueling at known gas stations, when fuel is at the warning threshold (200), it only performs short-range tasks, and the movement is restricted to approaching gas stations. When there are no interactive tasks and fuel is safe, the core edge-exploration logic is executed to maximize the coverage of unknown areas.
+
+\paragraph{Exploration strategy}
+Prioritizing moving along walls or holes, utilizing edge area exploration capabilities, which allows for faster coverage of unknown areas compared to random wandering, improving the efficiency of expanding your field of vision. Path planning prioritizes the limited A* algorithm, switches to the greedy algorithm when A* fails, and finally uses short-depth BFS as a fallback.
+
 
 \subsection{Agent 4 - <Role / Name>}
 % Describe objective, local policy, planner, memory, strengths/weaknesses.
