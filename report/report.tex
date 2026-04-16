@@ -35,7 +35,7 @@
 
 \author{
   Deng Zhouheng \\
-  <Matric Number> \\
+  G2504130B \\
   \texttt{zhuoheng001@e.ntu.edu.sg} \\
    \And
   Lou Enge \\
@@ -213,10 +213,26 @@ Prioritizing moving along walls or holes, utilizing edge area exploration capabi
 
 \lipsum[1] % placeholder
 
-\subsection{Agent 5 - <Role / Name>}
-% Describe objective, local policy, planner, memory, strengths/weaknesses.
+\subsection{AgentDeng - <Utility-Driven Agent>}
 
-\lipsum[1] % placeholder
+\paragraph{Decision Architecture} 
+AgentDeng is designed and implemented by Deng Zhouheng, adopting a utility-driven planner instead of a fixed-priority state machine to achieve flexible, context-aware decision making. At each step, four candidates --- fuel station, hole, tile, and exploration --- are scored simultaneously and the highest is selected:
+\begin{align*}
+  U_{\text{refuel}}  &= 200 \cdot e^{-4m/60}/(1+d), \\
+  U_{\text{hole}}    &= 50f/(1+d), \\
+  U_{\text{tile}}    &= 30f/(1+d), \\
+  U_{\text{explore}} &= 8/(1+d),
+  \end{align*}
+where $f = t_{\text{left}}/(t_{\text{left}}+d)$ and $m$ is the fuel margin. The exponential-decay fuel model avoids both premature refueling and late-game starvation. Replanning is triggered only when the target disappears or a candidate exceeds the current utility by $1.3\times$, preventing oscillation.
+
+\paragraph{Memory and Exploration}
+The agent maintains the standard \texttt{ObjectGrid2D} memory and uses object freshness to filter out candidates that cannot be reached before decay. Stale entries within sensor range are periodically verified against the real environment and removed once the corresponding objects vanish. A \texttt{visited[][]} bitmap tracks sensor-covered cells and guides exploration toward the nearest unvisited region. During the bootstrap phase, the agent performs a snake-pattern sweep within its assigned zone to efficiently locate the fuel station. 
+
+\paragraph{Anti-Stuck Fallback}
+A three-level mechanism handles pathfinding failures: (1) blacklist the unreachable target
+for 20 steps, (2) fall back to a greedy one-step move, (3) after five stationary steps,  
+purge all remembered obstacles and replan. This robustness, combined with the utility     
+planner, achieved a higher reward.
 
 \subsection{Agent 6 - <Role / Name>}
 % Describe objective, local policy, planner, memory, strengths/weaknesses.
