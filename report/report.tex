@@ -43,7 +43,7 @@
   \texttt{enge001@e.ntu.edu.sg} \\
    \And
   Sun Qingmo \\
-  <Matric Number> \\
+  G2503968G \\
   \texttt{qingmo001@e.ntu.edu.sg} \\
    \And
   Wu Shanni \\
@@ -208,10 +208,21 @@ The agent's decision-making logic follows a clear priority hierarchy. When no ga
 Prioritizing moving along walls or holes, utilizing edge area exploration capabilities, which allows for faster coverage of unknown areas compared to random wandering, improving the efficiency of expanding your field of vision. Path planning prioritizes the limited A* algorithm, switches to the greedy algorithm when A* fails, and finally uses short-depth BFS as a fallback.
 
 
-\subsection{Agent 4 - <Role / Name>}
-% Describe objective, local policy, planner, memory, strengths/weaknesses.
+\subsection{AgentSun - <The Adaptation Specialist>}
+AgentSun is implemented by Sun Qingmo. Its core idea is automatic adaptation. Memory and fuel policies are designed to adjust to any configuration without manual tuning.
 
-\lipsum[1] % placeholder
+\paragraph{Planning}
+AgentSun uses a strict priority cascade: (1)fuel management, (2)immediate cell action (pick up or put down when standing on a target), (3)task completion with sticky target locks, (4)zone sweep exploration. Once locked, a target is kept until it disappears, fuel becomes unsafe, or a teammate wins priority arbitration.
+
+\paragraph{Adaptive Memory Expiry}
+A two-layer system keeps the world model accurate. Within sensor range, cells observed empty are evicted immediately. Beyond sensor range, entries expire after a threshold from a survival-probability model: $\text{EXPIRY} = \max\!\big(r,\; L \times 0.7 - \sqrt{A / N}\big)$, where $L$ is lifetime, $A$ is map area, $N$ is estimated alive objects. 
+
+\paragraph{Three-Tier Fuel Management}
+Three layers ensure survival: on-station refuel, critical navigation when fuel barely covers the return trip, and opportunistic refuel when passing within 15 cells of the station. A detour-safety check gates every tile pursuit.
+
+\paragraph{Exploration}
+The agent performs a boustrophedon sweep of its assigned zone with strip spacing $2r{+}1$, guaranteeing full coverage. An anti-stuck fallback chains A*, greedy, and random moves to escape deadlocks.
+
 
 \subsection{AgentDeng - <Utility-Driven Agent>}
 
