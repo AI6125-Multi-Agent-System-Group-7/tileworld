@@ -83,187 +83,169 @@ different simulations will start with a randomly generated seed.
 The reward is defined by the number of holes filled. The initial fuel is fixed at the maximum fuel carriage of 500.
 
 There are 3 different configurations that affect world size, object lifetime, and object creation distribution. \\
-- Parameter Set 1: World Size = \(50\times50\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=0.2, \sigma=0.05)\), Lifetime = 100. \\
-- Parameter Set 2: World Size = \(80\times80\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=2, \sigma=0.5)\), Lifetime = 30. \\
-- Parameter Set 3: World Size = \(120\times120\), Object Creation Rate $\sim$\(\mathcal{N}(\mu=5, \sigma=0.5)\), Lifetime = 50.
+\begin{table}[h]
+\centering
+\caption{Experimental Parameter Settings}
+\label{tab:parameter-settings}
+\begin{tabular}{|c|c|c|c|}
+\hline
+\textbf{Parameter} & \textbf{World Size} & \textbf{Object Creation Rate} & \textbf{Lifetime} \\
+\hline
+Set 1 & $50 \times 50$ & $\mathcal{N}(\mu=0.2,\ \sigma=0.05)$ & 100 \\
+\hline
+Set 2 & $80 \times 80$ & $\mathcal{N}(\mu=2,\ \sigma=0.5)$ & 30 \\
+\hline
+Set 3 & $120 \times 120$ & $\mathcal{N}(\mu=5,\ \sigma=0.5)$ & 50 \\
+\hline
+\end{tabular}
+\end{table}
 
 \section{Agent Design}
 
 \subsection{Group7AgentBase - Abstract Base Class}
 
-We centralized basic Agent behaviors to this base agent class that extends the \texttt{TWAgent} class. 
-
-Group7AgentBase is a reusable control and coordination layer for all Group 7 agents. 
-It standardizes low-level mobility with A* path planning, path reuse/clearing, obstacle-aware stepping, and a deterministic zig-zag fallback for exploration when no high-level target is available. 
-It also provides fuel-station handling so subclasses can focus on policy rather than survival plumbing. 
-On communication, the base defines the G7P2 protocol and parser, supports directed and broadcast messages, and auto-emits basic messages like discovery and sensor snapshots.
+Group7AgentBase is the shared control and coordination layer for all Group 7 agents.
+It standardizes low-level navigation (A*-based movement, path reuse, obstacle-aware stepping, and zig-zag fallback exploration), so each agent can focus on high-level policy.
+It also unifies fuel-safe behavior through common refuel handling.
+On collaboration, the base implements G7P2 messaging, including directed and broadcast communication, and regularly publishes core shared signals such as discoveries and local sensor snapshots.
+This design isolates reusable infrastructure from agent-specific decision logic and provides a consistent interface for comparing policies.
 
 \subsection{AgentHanny - The Proactive Learner}
 
-This Agent is designed and implemented by Zhang Yanhai, as an agent that dynamically modeling the current environment with observation data gathered from the team and utilizes the estimation in calculating the expected utility in the planning phase.
+AgentHanny updates a shared world estimate from local and team observations, then plans by maximizing expected utility.
 
 \paragraph{Planning}
-This agent decides its action based on \textbf{utility over plan}, where a plan is an action sequence from the current position. 
-To determine this, we estimate object survival probability and aggregate utilities over all targets in the sequence.
-Survival analysis \cite{kleinbaum2012survival} was used for estimating the object existing probability and the full derivation is included in the appendix.
-
-AgentHanny will form plans from memory with picking up {1...available-carry-space} tiles and filling them to {1...expected-carried-tiles} holes, 
-then calculate the expected utility (details in the appendix).
-Then the plan with highest EU will be selected and executed, with Target Lock send to teammates.
-The agent action flow can be summarized as follows:
+Actions are selected by \textbf{utility over plan}, where each plan is a sequence of pickup/fill decisions from the current state.
+The key signal is expected utility, computed using survival-based estimates of whether candidate objects remain available at arrival time (derivation in the appendix \cite{kleinbaum2012survival}).
+The agent executes the highest-EU plan and locks only the currently executed target to reduce conflict.
+The overall control loop is shown in Figure~\ref{fig:hanny-flow}.
 
 \begin{figure}[ht]
     \centering
     \includegraphics[width=0.8\linewidth]{AgentHannyFlow.png}
     \caption{AgentHanny Action Flow}
+    \label{fig:hanny-flow}
 \end{figure}
 
 \paragraph{Communications}
-Agent Hanny follows the protocol defined in \texttt{Group7AgentBase} and consumes team messages each think cycle. It uses:
-Target lock is acquired/kept for the \emph{current execution target} (not for every recalled target at plan creation time), renewed before expiry, and released when target is completed, invalidated, pre-empted, or when mode switches (e.g., refuel/re-plan).
+AgentHanny follows G7P2 and integrates incoming team messages.
+Target locks are renewed while a target remains valid and are released immediately after completion, invalidation, pre-emption, or mode switching (e.g., replanning/refuel).
 
 \paragraph{Memory Layer}
-In order to make the online MLE possible, AgentHanny keeps a memory side-card to record additional information that \texttt{TWAgentWorkingMemory} does not provide.
-Additional information includes objectType, firstSeen, lastSeen, etc.
-This side card is always synchronized with the original working memory, and the information is updated when new observation is made.
+To support online estimation, the agent keeps augmented memory metadata (e.g., object type and temporal observation cues) synchronized with the shared world model.
 
 \paragraph{Exploration}
-In order to maximize the social welfare, AgentHanny is designed to explore the sections of the tileworld map that are least explored by the team.
-To be more specific, AgentHanny divides the map into a dynamic \(n \times n\) grid, where n is set to \(WorldSize//15\).
-Each section is scored with negative signals from teammate density, explored coverage, and distance from current position. 
-Sections whose center has a too-long distance from AgentHanny is excluded. The section with the best score is selected, and if no valid section exists, the agent falls back to zig-zag exploration.
+For team-level coverage, the map is partitioned into a dynamic \(n \times n\) grid (\(n=WorldSize//15\)).
+Sections are scored by teammate density, explored coverage, and travel distance; far infeasible sections are filtered.
+The best-scoring section is explored first, with zig-zag fallback when no valid section exists.
 
-\subsection{AgentEnge -- The Priority-Driven Planner}
+\subsection{AgentEnge - The Priority-Driven Planner}
 
-This agent is designed and implemented by Lou Enge as an agent that operates via a
-strict four-level priority state machine, combining obstacle-aware A* path planning
-with a lawnmower exploration strategy and G7P2-compatible target-lock conflict avoidance.
+AgentEnge follows a strict four-level priority planner that combines fuel safety, task execution, and structured exploration with team conflict avoidance.
 
 \paragraph{Planning}
-AgentEnge makes decisions through a prioritised cascade evaluated every think cycle:
+Decisions are evaluated every cycle through a fixed cascade:
 \begin{enumerate}
-  \item \textbf{Survival} (fuel $<$ 180): all other goals are suspended; the agent
-        navigates to the nearest known fuel station, re-discovering it through
-        lawnmower scan if not yet in memory.
-  \item \textbf{Fill-Hole} (carrying $\geq 1$ tile and a hole is in memory):
-        the agent selects a fill target by iterating holes in memory sorted by
-        Manhattan distance, skipping any hole that has already disappeared from
-        the environment grid or is held under a higher-priority teammate lock,
-        then navigates to the first remaining candidate.
-  \item \textbf{Pickup} (carried tiles $< 3$ and a tile is in sensor range):
-        acquire a target lock and navigate to the nearest visible tile.
-  \item \textbf{Exploration}: lawnmower scan of the assigned zone.
+  \item \textbf{Survival} (\(fuel<180\)): go to fuel station immediately.
+  \item \textbf{Fill} (carrying tile and valid hole exists): pick the nearest feasible unlocked hole.
+  \item \textbf{Pickup} (capacity available and tile available): lock and collect nearest feasible tile.
+  \item \textbf{Exploration}: sweep the assigned area.
 \end{enumerate}
-Path planning uses an internal A* implementation with Manhattan-distance heuristic.
-Before committing to a path, the agent evaluates feasibility against two criteria:
-remaining fuel must exceed path length, and for objects with finite lifetimes the
-estimated travel steps must not exceed the object's remaining time-to-live.
-If A* fails or the cost check rejects the path, the agent refreshes its obstacle
-memory from the current sensor view and retries up to $k=3$ times before
-abandoning the target.
+A* planning is accepted only when both fuel margin and object lifetime are feasible.
+If planning fails, the agent refreshes obstacle knowledge and retries up to \(k=3\) before switching targets.
 
 \paragraph{Communications}
-AgentEnge adheres to the G7P2 protocol and processes all cooperative messages
-each think cycle (see Section~4 for protocol details).
-Its primary contribution to the conflict-avoidance layer is issuing \texttt{TL}
-messages upon entering Pickup or Fill-Hole mode, renewed each cycle with a TTL
-of $[8, 20]$ steps and an inverse-distance priority score.
-A higher-priority teammate lock immediately pre-empts the local target,
-redirecting the agent to exploration without a wasted trip.
+AgentEnge uses G7P2 target-lock messages to coordinate pickup/fill tasks.
+Locks are renewed with bounded TTL and inverse-distance priority; higher-priority locks pre-empt local targets to reduce duplicated trips.
 
 \paragraph{Memory \& Obstacle Handling}
-AgentEnge maintains two layers of position history to suppress oscillation:
-a short deque (depth 3) for immediate back-tracking avoidance and a longer deque
-(depth 8) for two-cell-cycle detection ($A{\to}B{\to}A{\to}B$ patterns).
-When either pattern is detected the lawnmower cursor is forcibly advanced and the
-agent takes one unconstrained step to escape.
-Because \texttt{TWFuelStation} is not a \texttt{TWObject} and is therefore not
-automatically stored by the framework's working memory, the agent manually scans
-its sensor footprint each step and writes any observed fuel station directly into
-the memory grid.
+Two-position-history horizons suppress oscillation and short cycles; when a cycle is detected, exploration cursor advancement forces escape behavior.
+Fuel-station observations are explicitly maintained to keep survival planning reliable.
 
 \paragraph{Exploration}
-The lawnmower scan partitions the map into rows of height equal to the sensor
-diameter ($2r+1=7$ cells), sweeping left-to-right on even passes and
-right-to-left on odd passes with a step size of 7.
-Each agent's starting cursor is offset by a hash of its name to prevent
-six agents from scanning in lockstep at startup.
-During the zone-bootstrap phase the scan is clipped to the agent's ZA-assigned
-rectangle; after coordination completes, soft repulsion from teammate SS positions
-nudges waypoints away from dense clusters to reduce sensor overlap.
-If the computed waypoint is already occupied by the agent, the cursor advances
-immediately to avoid a null-path spin.
+The agent uses lawnmower sweeps with strip width \(2r+1\), per-agent phase offsets, and zone-aware bootstrapping.
+After coordination stabilizes, waypoint selection is nudged away from teammate-dense areas to reduce sensing overlap.
 
-\subsection{Agent 3 - <SmartAgent / The Explorer>}
+\subsection{Agent 3 - SmartAgent / The Explorer}
 
-The SmartAgent is a collaborative agent designed for the TileWorld simulation environment. Its core objective is to expand the environmental field of vision through efficient edge-exploration strategies and share key information discovered, such as the location of gas stations, tiles, and holes, with teammates to provide vision support for team.
+SmartAgent is built to maximize team visibility in early and mid stages by prioritizing edge-oriented exploration and broadcasting discovered fuel stations, tiles, and holes.
 
 \paragraph{Core Design Principles}
-The design of intelligent agents revolves around three core principles: safe exploration, controllable fuel, and collaborative sharing. The collaboration protocol follows our communication design.
+Its design follows three principles: safe exploration, fuel-bounded behavior, and collaborative information sharing under the common team protocol.
 
 \paragraph{Think Principles}
-The agent's decision-making logic follows a clear priority hierarchy. When no gas station is found, a serpentine grid search strategy is initiated to locate a gas station. When fuel is below the refueling threshold (150), it prioritizes refueling at known gas stations, when fuel is at the warning threshold (200), it only performs short-range tasks, and the movement is restricted to approaching gas stations. When there are no interactive tasks and fuel is safe, the core edge-exploration logic is executed to maximize the coverage of unknown areas.
+Decision making follows a hierarchy:
+if no fuel station is known, run serpentine search to bootstrap survival.
+If \(fuel<150\), refuel immediately; if \(150 \le fuel < 200\), only execute short-range actions that keep the agent near station access.
+When fuel is safe and no urgent interaction exists, edge exploration is preferred to expand unknown-area coverage quickly.
 
 \paragraph{Exploration strategy}
-Prioritizing moving along walls or holes, utilizing edge area exploration capabilities, which allows for faster coverage of unknown areas compared to random wandering, improving the efficiency of expanding your field of vision. Path planning prioritizes the limited A* algorithm, switches to the greedy algorithm when A* fails, and finally uses short-depth BFS as a fallback.
+The exploration policy biases motion along boundaries and edge structures, which improves frontier discovery versus unconstrained wandering.
+Navigation uses a staged fallback: constrained A* first, then greedy move selection, and short-depth BFS as the final recovery option.
 
 
-\subsection{AgentSun - <The Adaptation Specialist>}
-AgentSun is implemented by Sun Qingmo. Its core idea is automatic adaptation. Memory and fuel policies are designed to adjust to any configuration without manual tuning.
+\subsection{AgentSun - The Adaptation Specialist}
+AgentSun is an adaptation-focused policy designed to remain stable across different map and object configurations without manual retuning.
 
 \paragraph{Planning}
-AgentSun uses a strict priority cascade: (1)fuel management, (2)immediate cell action (pick up or put down when standing on a target), (3)task completion with sticky target locks, (4)zone sweep exploration. Once locked, a target is kept until it disappears, fuel becomes unsafe, or a teammate wins priority arbitration.
+Its decision cascade is: (1) fuel safety, (2) immediate local action (pick/place on current cell), (3) locked task completion, (4) zone sweep exploration.
+A lock is kept until target disappearance, unsafe fuel state, or teammate pre-emption.
 
 \paragraph{Adaptive Memory Expiry}
-A two-layer system keeps the world model accurate. Within sensor range, cells observed empty are evicted immediately. Beyond sensor range, entries expire after a threshold from a survival-probability model: $\text{EXPIRY} = \max\!\big(r,\; L \times 0.7 - \sqrt{A / N}\big)$, where $L$ is lifetime, $A$ is map area, $N$ is estimated alive objects. 
+A two-layer memory policy maintains model freshness:
+within sensor range, empty observations immediately clear stale entries; beyond range, expiry follows
+\[
+\text{EXPIRY} = \max\!\big(r,\; 0.7L - \sqrt{A/N}\big),
+\]
+where \(L\) is object lifetime, \(A\) map area, and \(N\) estimated alive objects.
 
 \paragraph{Three-Tier Fuel Management}
-Three layers ensure survival: on-station refuel, critical navigation when fuel barely covers the return trip, and opportunistic refuel when passing within 15 cells of the station. A detour-safety check gates every tile pursuit.
+Fuel control combines on-station refuel, critical return protection when margin is tight, and opportunistic refuel when passing near station range (15 cells), with detour-safety checks before tile pursuit.
 
 \paragraph{Exploration}
-The agent performs a boustrophedon sweep of its assigned zone with strip spacing $2r{+}1$, guaranteeing full coverage. An anti-stuck fallback chains A*, greedy, and random moves to escape deadlocks.
+Exploration uses boustrophedon sweeps with strip spacing \(2r+1\) for systematic coverage.
+If blocked, the fallback chain is A* \(\rightarrow\) greedy \(\rightarrow\) random escape.
 
 
-\subsection{AgentDeng - <Utility-Driven Agent>}
+\subsection{AgentDeng - Utility-Driven Agent}
 
 \paragraph{Decision Architecture} 
-AgentDeng is designed and implemented by Deng Zhouheng, adopting a utility-driven planner instead of a fixed-priority state machine to achieve flexible, context-aware decision making. At each step, four candidates --- fuel station, hole, tile, and exploration --- are scored simultaneously and the highest is selected:
+AgentDeng uses a utility-driven selector rather than a fixed-priority state machine.
+At each step, four candidates (refuel, hole, tile, explore) are scored and the highest utility is executed:
 \begin{align*}
   U_{\text{refuel}}  &= 200 \cdot e^{-4m/60}/(1+d), \\
   U_{\text{hole}}    &= 50f/(1+d), \\
   U_{\text{tile}}    &= 30f/(1+d), \\
   U_{\text{explore}} &= 8/(1+d),
   \end{align*}
-where $f = t_{\text{left}}/(t_{\text{left}}+d)$ and $m$ is the fuel margin. The exponential-decay fuel model avoids both premature refueling and late-game starvation. Replanning is triggered only when the target disappears or a candidate exceeds the current utility by $1.3\times$, preventing oscillation.
+where \(f = t_{\text{left}}/(t_{\text{left}}+d)\) and \(m\) is fuel margin.
+The exponential refuel term balances early over-refuel and late starvation.
+To avoid oscillation, replanning is triggered only if the target vanishes or a new option exceeds current utility by \(1.3\times\).
 
 \paragraph{Memory and Exploration}
-The agent maintains the standard \texttt{ObjectGrid2D} memory and uses object freshness to filter out candidates that cannot be reached before decay. Stale entries within sensor range are periodically verified against the real environment and removed once the corresponding objects vanish. A \texttt{visited[][]} bitmap tracks sensor-covered cells and guides exploration toward the nearest unvisited region. During the bootstrap phase, the agent performs a snake-pattern sweep within its assigned zone to efficiently locate the fuel station. 
+Memory freshness filtering removes candidates unlikely to survive until arrival.
+A visited-map guides exploration toward nearest unseen regions, and bootstrap behavior uses zone-restricted snake sweeps to find fuel stations quickly.
 
 \paragraph{Anti-Stuck Fallback}
-A three-level mechanism handles pathfinding failures: (1) blacklist the unreachable target
-for 20 steps, (2) fall back to a greedy one-step move, (3) after five stationary steps,  
-purge all remembered obstacles and replan. This robustness, combined with the utility     
-planner, achieved a higher reward.
+Path failures are handled by a three-stage fallback:
+temporary target blacklist (20 steps), greedy one-step recovery, then memory reset and replanning after persistent stagnation.
 
-\subsection{AgentWu - <Verificaiton and Retry Mechanism>}
+\subsection{AgentWu - Verification and Retry Mechanism}
 % Describe objective, local policy, planner, memory, strengths/weaknesses.
-AgentWu is implemented by Wu Shanni. It focuses on planning module with verification and retry mechanism, which is designed to cache planned path, verify target’s existence at a fixed interval to decide whether to replan path and have a retry schema of 3 'A* -> greedy closest direction' rounds after first planning failure and before replanning the path.
+AgentWu centers on verification-driven planning: cache a path, periodically validate target availability, and retry before full replanning.
 
 \paragraph{Planning} 
-To ensure robust navigation and efficient multi-agent coordination, path planning framework integrates three core strategies: dynamic target selection and collision detection, which synthesizes local perception with shared memory; collaborative conflict resolution, utilizing an inter-agent messaging and locking mechanism to effectively mitigate task contention; and proactive path adaptation, which performs a target validity check every 15 steps to trigger immediate re-planning if a target becomes unavailable or is claimed by another agent.\\\\
-Path planning:\\
-a. After identifying and locking onto a target, use the limited A* algorithm to plan a path and cache it. If algorithm cannot find a path, take a greedy step toward the target and retry planning in the next step. If it still fails after 3 such cycles, release the lock, identify another nearest target, and replan the path.\\\\
-b. When there is no target locked, move in a zigzag pattern. If the location generated by the exploration is unreachable, attempt to switch to the next location by trying 4 directions (4 opportunities).
+The planner combines dynamic target selection, conflict-aware locking, and proactive adaptation.
+After locking a target, it plans and caches a path with constrained A*.
+If planning fails, the agent performs greedy recovery and retries; after three failed A*+greedy cycles it releases the target, selects a new one, and replans.
+A target validity check runs every 15 steps and triggers immediate replanning when a target disappears or is claimed by teammates.
+Without an active target, the agent uses zig-zag exploration and directional fallback to keep moving.
 
-\paragraph{Communication} Adhere to the G7P2 protocol, join the ZoneCoordination mechanism and share the memory by broadcasting as others.
+\paragraph{Communication} AgentWu follows G7P2, participates in zone coordination, and broadcasts discovered state for team memory sharing.
 
-\paragraph{Fuel management} If the fuel level falls below the threshold 150, the agent immediately plans a route to the fuel station to refuel, avoiding a stall due to running out of fuel.
+\paragraph{Fuel management} If \(fuel<150\), refuel has immediate priority to avoid deadlock from fuel depletion.
 
-\paragraph{Utility} A simple utility function based on Manhattan distance; closer targets yield higher utility and are prioritized.
-
-
-
-
+\paragraph{Utility} A distance-based utility preference (Manhattan distance) biases selection toward closer feasible targets.
 
 
 \section{Agent Communication \& Collaboration}
@@ -333,15 +315,11 @@ Ablation reveals the source of improvement. Removing communication reduces rewar
 \section{Conclusion}
 
 This project developed a six-agent Tileworld system with a shared engineering backbone (\texttt{Group7AgentBase}) and agent-specific decision modules.
-The implemented framework unifies path planning, fuel-safe control, and a structured communication protocol (G7P2), while allowing each agent to introduce distinct planning and memory mechanisms.
-
-Empirically, our results show that the complete system consistently outperforms ablated variants across all tested parameter sets.
-The ablation study further demonstrates that communication and policy specialization are complementary: removing either substantially harms final reward.
-
-The current implementation still has limitations.
-Richer planners or exploration strategies can introduce nontrivial runtime overhead on large maps, and some systems rely heavily on SS message which have a high bandwidth cost.
-Future work should therefore target adaptive communication budgets that manages bandwidth-urgency trade-offs, 
-and tighter integration between global coordination signals and local plan repair to improve robustness under extreme dynamism.
+The framework unifies path planning, fuel-safe control, and structured communication (G7P2), while preserving policy diversity across agents.
+Empirical results show that the full system consistently outperforms both ablated variants across all tested parameter sets.
+Ablation further confirms that communication and policy specialization are complementary; removing either causes major reward loss.
+Limitations remain: richer planners can increase runtime overhead on large maps, and heavy reliance on SS messages raises bandwidth cost.
+Future work should explore adaptive communication budgets and tighter coupling between global coordination and local plan repair under extreme dynamism.
 
 %Bibliography
 \bibliographystyle{unsrt}  
@@ -349,8 +327,14 @@ and tighter integration between global coordination signals and local plan repai
 
 \appendix{\large \textbf{Appendix}}
 
-[AgentHanny] \\
-Deriviation of the object survival probability estimation and the online MLE process for hazard estimation.
+\section{Codebase}
+The full codebase is available at \url{https://github.com/AI6125-Multi-Agent-System-Group-7/tileworld}, with the main branch containing the latesst version of our implementation.
+
+\section{Presentation Slides}
+The slides we've used in the presentation session are available at \url{https://docs.google.com/presentation/d/1kJzGEwVwkM7ECRuiSRMuSTnta10e4aWEWixvR19Tg58}.
+
+\section{AgentHanny - MLE for Hazard Estimation Derivation}
+Object survival probability modelled as exponential decay:
 \[
 p_{alive} = e^{-\lambda \Delta t} \quad \in (0,1]
 \]
@@ -358,8 +342,8 @@ p_{alive} = e^{-\lambda \Delta t} \quad \in (0,1]
 Here, \(\Delta t\) is the estimated time of arrival from the current time stamp, and \(\lambda\) is a reflecting environment \(hazard\) that affects the agent's expectation of an object still alive. 
 This \(harzard\) will be different across different experiment setups, such as world size and object creation distribution.
 
-We model each observe on an object as a Bernoulli trial, with matching observation with possibility \(P_{match}=\exp(-\lambda \Delta t)\) and a mismatch with possibility \(P_{mismatch}=1 - \exp(-\lambda \Delta t)\). 
-Then we can use the maximum likelihood estimation (MLE) to find the best \(\lambda\) that fits the observation data.
+We model each observe on an object as a Bernoulli trial with \(p_{alive}\),
+then we can use the maximum likelihood estimation (MLE) to find the best \(\lambda\) that fits the observation data.
 By computing the gradient of the negative log-likelihood \(l(P)\), we can then perform the MLE via mini-batch stochastic gradient decent (SGD) with update rule as follows:
 
 \[
@@ -407,17 +391,6 @@ By using learning rate schedule and gradient ceiling and clipping, the lambda is
     \label{hzd-5000steps}
 \end{figure}
 
-[AgentHanny] \\
-Expected utility deriviation on a plan with multiple targets:
-
-\[
-EU_{plan}
-= \sum_{pickup}{p_{tile-alive} \cdot 0.20}
-+ \sum_{fill}{p_{hole-alive} \cdot 1.00}
-- 0.07 \cdot Distance
-- FuelPenalty
-\]
-
-% Sdditional details
+% Additional details
 
 \end{document}
