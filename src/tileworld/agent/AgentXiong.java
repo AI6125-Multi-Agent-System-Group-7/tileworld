@@ -56,7 +56,7 @@ public class AgentXiong extends Group7AgentBase {
 
     // 构造
     public AgentXiong(int xpos, int ypos, TWEnvironment env, double fuelLevel) {
-        super("SmartAgent",xpos, ypos, env, fuelLevel);
+        super("AgentXiong",xpos, ypos, env, fuelLevel);
         this.ownTargetLockTtlSteps = computeDefaultTargetLockTtl(env);
         enableZoneCoordination();
     }
