@@ -64,7 +64,7 @@
 
 \begin{abstract}
 This report presents Group 7's six-agent system for Tileworld, a partially observable and dynamic grid environment with fuel, sensing, and carrying constraints.
-Our implementation combines a shared engineering layer (\texttt{Group7AgentBase}), protocol-driven collaboration (G7P2), and agent-specific planning policies.
+Our implementation combines a shared engineering layer (\texttt{Group7AgentBase}), protocol-driven collaboration (G7P2), and agent-specific action policies.
 We evaluate the system on three parameter sets and report mean reward over repeated runs.
 Results and ablations show that both communication and policy specialization are necessary for strong team performance, especially in larger and more dynamic maps.
 \end{abstract}
@@ -78,14 +78,14 @@ In this project, six agents jointly act in the same environment using a Sense$\r
 
 \section{Environment \& Experiment Setup}
 
-Our experiment is conducted in a tileworld simulator implemented in Java 1.8 with the Java3D v1.5.1 and MASON 14 package. One simulation will run for 5000 steps and we take the final reward as the metric of the agents system; 
+We ran experiments in a tileworld simulator implemented in Java 1.8 with the Java3D v1.5.1 and MASON 14 package. One simulation will run for 5000 steps and we take the final reward as the metric of the agents system; 
 different simulations will start with a randomly generated seed. 
 The reward is defined by the number of holes filled. The initial fuel is fixed at the maximum fuel carriage of 500.
 
-There are 3 different configurations that affect world size, object lifetime, and object creation distribution. \\
+We evaluated 3 different configurations that have different world sizes, object lifetimes, and object creation distributions. \\
 \begin{table}[h]
 \centering
-\caption{Experimental Parameter Settings}
+\caption{Experimental Parameters Settings}
 \label{tab:parameter-settings}
 \begin{tabular}{|c|c|c|c|}
 \hline
@@ -123,7 +123,7 @@ The overall control loop is shown in Figure~\ref{fig:hanny-flow}.
 \begin{figure}[ht]
     \centering
     \includegraphics[width=0.8\linewidth]{AgentHannyFlow.png}
-    \caption{AgentHanny Action Flow}
+    \caption{AgentHanny Acting Logic Flowchart}
     \label{fig:hanny-flow}
 \end{figure}
 
@@ -224,7 +224,7 @@ To avoid oscillation, replanning is triggered only if the target vanishes or a n
 
 \paragraph{Memory and Exploration}
 Memory freshness filtering removes candidates unlikely to survive until arrival.
-A visited-map guides exploration toward nearest unseen regions, and bootstrap behavior uses zone-restricted snake sweeps to find fuel stations quickly.
+A visited map guides exploration toward nearest unseen regions, and bootstrap behavior uses zone-restricted snake sweeps to find fuel stations quickly.
 
 \paragraph{Anti-Stuck Fallback}
 Path failures are handled by a three-stage fallback:
@@ -250,10 +250,11 @@ Without an active target, the agent uses zig-zag exploration and directional fal
 
 \section{Agent Communication \& Collaboration}
 
-Communication is implemented in \texttt{Group7AgentBase} under protocol version \texttt{G7P2}, with message tuple \(\langle version, step, from, to, type, x, y, payload\rangle\). 
+Communication is implemented in \texttt{Group7AgentBase} under our latest protocol version \texttt{G7P2}, 
+with message tuple \(\langle version, step, from, to, type, x, y, payload\rangle\). 
 In \texttt{TWEnvironment}, \texttt{sense()} and \texttt{communicate()} are scheduled before \texttt{think()} and \texttt{act()}, so messages produced in a step are readable by teammates in that same decision cycle.
 
-The protocol combines sparse events and dense snapshots. 
+The protocol combines sparse events and step-wise snapshots. 
 Event messages broadcast newly observed objects (\texttt{NT/NH/OB}), one-time fuel-station discovery (\texttt{FS}), and action confirmations (\texttt{PK/FH}). Snapshot message \texttt{SS} encodes local empty/occupied cells each step to refresh shared belief quickly. 
 Collaboration is staged: bootstrap zone assignment uses \texttt{ZA/ZK} (deterministic manager election with bounded retries), while runtime conflict avoidance uses \texttt{TL/TR} target locks with priority and TTL. 
 Together, these mechanisms reduce redundant pursuit and improve task allocation stability under partial observability.
@@ -262,7 +263,7 @@ And the use of target management enpowers our agents to form a expanding area of
 \begin{figure}[ht]
     \centering
     \includegraphics[width=0.8\linewidth]{AgentWorkingArea.png}
-    \caption{Dynamic Agents Working Area Indication}
+    \caption{Dynamic Agents Working Area with Target Locking Mechanism}
 \end{figure}
 
 So that we may minimize step wasted on unnecessary movements $\notin$ \{plan execution, exploration\}.
@@ -289,7 +290,7 @@ Mean reward increases from Parameter Set 1 to 3, suggesting that higher object-g
 \section{Ablation Study}
 
 We investigated the contribution on the core designs of our agent system by disabling each of them and test on each configuration for 10 runs and take the mean value for comparison.
-One is the communication mechanism, we added a \texttt{CommunicationBlackhole} that absorbs all outgoing messages to remove communication layer while keeping other parts of the system exact.
+One is the communication mechanism, we added a \texttt{CommunicationBlackhole} that absorbs all outgoing messages to remove communication layer while keeping other parts of the system unchanged.
 The other core design is each of our Agent's local policy and planner, we implemented a \texttt{MinimalAgent} that only has the basic mobility and survival functions provided by the \texttt{Group7AgentBase}, 
 with a simple greedy policy to pick up the nearest tile and fill the nearest hole, without any of the additional logic in the original design.
 
@@ -328,10 +329,10 @@ Future work should explore adaptive communication budgets and tighter coupling b
 \appendix{\large \textbf{Appendix}}
 
 \section{Codebase}
-The full codebase is available at \url{https://github.com/AI6125-Multi-Agent-System-Group-7/tileworld}, with the main branch containing the latesst version of our implementation.
+The full codebase is available at \url{https://github.com/AI6125-Multi-Agent-System-Group-7/tileworld}, with the main branch containing the latest version of our implementations.
 
 \section{Presentation Slides}
-The slides we've used in the presentation session are available at \url{https://docs.google.com/presentation/d/1kJzGEwVwkM7ECRuiSRMuSTnta10e4aWEWixvR19Tg58}.
+Our slides used in the presentation session are available at \url{https://docs.google.com/presentation/d/1kJzGEwVwkM7ECRuiSRMuSTnta10e4aWEWixvR19Tg58}.
 
 \section{AgentHanny - MLE for Hazard Estimation Derivation}
 Object survival probability modelled as exponential decay:
@@ -340,10 +341,10 @@ p_{alive} = e^{-\lambda \Delta t} \quad \in (0,1]
 \]
 
 Here, \(\Delta t\) is the estimated time of arrival from the current time stamp, and \(\lambda\) is a reflecting environment \(hazard\) that affects the agent's expectation of an object still alive. 
-This \(harzard\) will be different across different experiment setups, such as world size and object creation distribution.
+This \(hazard\) will be different across different experiment setups, such as world size and object creation distribution.
 
-We model each observe on an object as a Bernoulli trial with \(p_{alive}\),
-then we can use the maximum likelihood estimation (MLE) to find the best \(\lambda\) that fits the observation data.
+We model each observation on an object as a Bernoulli trial with \(p_{alive}\),
+then we can use the maximum likelihood estimation (MLE) to find the best \(\lambda\) that fits the observed data.
 By computing the gradient of the negative log-likelihood \(l(P)\), we can then perform the MLE via mini-batch stochastic gradient decent (SGD) with update rule as follows:
 
 \[
@@ -363,7 +364,7 @@ By computing the gradient of the negative log-likelihood \(l(P)\), we can then p
 \end{aligned}
 \]
 
-By using learning rate schedule and gradient ceiling and clipping, the lambda is then converged to a stable range after 1000 steps on online training, as the curves shown in the figure below.
+By using learning rate schedule and gradient ceiling and clipping, the $\lambda$ converges to a reasonable range after 1000 steps on online training, as the curves shown in the figure below.
 
 \begin{figure}[htbp]
     \centering
@@ -390,7 +391,5 @@ By using learning rate schedule and gradient ceiling and clipping, the lambda is
     \caption{Hazard Figure Across Different Environment Settings (without smoothing).}
     \label{hzd-5000steps}
 \end{figure}
-
-% Additional details
 
 \end{document}
